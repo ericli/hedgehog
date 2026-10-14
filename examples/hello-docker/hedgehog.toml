@@ -1,0 +1,2 @@
+# This app keeps its state in a file, so it doesn't need a database.
+postgres = false

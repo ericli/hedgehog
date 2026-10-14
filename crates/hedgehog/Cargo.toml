@@ -1,0 +1,34 @@
+[package]
+name = "hedgehog"
+description = "Drop a repo on your Mac, get a private URL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hedgehog"
+path = "src/main.rs"
+
+[dependencies]
+hedgehog-core.workspace = true
+hedgehog-daemon.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+flate2.workspace = true
+futures-util.workspace = true
+ignore.workspace = true
+qrcode.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

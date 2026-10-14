@@ -1,0 +1,8 @@
+{
+  "name": "hello-bun",
+  "private": true,
+  "packageManager": "bun@1.3.7",
+  "scripts": {
+    "start": "bun run server.ts"
+  }
+}
