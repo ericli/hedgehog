@@ -333,7 +333,7 @@ async fn create_app(
     if let Some(branch) = &branch {
         crate::git::validate_branch(branch).map_err(bad_request)?;
     }
-    if daemon.store.app(&name)?.is_some() || daemon.paths.app_source(&name).exists() {
+    if daemon.name_taken(&name)? {
         return Err(ApiError(
             StatusCode::CONFLICT,
             format!("there's already an app (or a folder) called {name}"),
@@ -348,22 +348,20 @@ async fn create_app(
     Ok(event_stream(rx))
 }
 
-async fn webhook_info(daemon: &Daemon, app: &AppRecord, secret: String) -> ApiResult<WebhookInfo> {
-    let branch = crate::git::current_branch(&app.source_dir).await;
-    if branch.is_none() {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            format!(
-                "{} isn't a git clone on a branch, so there's nothing to deploy on push",
-                app.name
-            ),
-        ));
-    }
-    Ok(WebhookInfo {
-        url: crate::hooks::url(daemon, &app.name),
-        secret,
-        branch,
-    })
+/// The branch pushes deploy from, or a 409 if the app isn't a git clone on
+/// one. Checked before any secret is created or replaced.
+async fn webhook_branch(app: &AppRecord) -> ApiResult<String> {
+    crate::git::current_branch(&app.source_dir)
+        .await
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::CONFLICT,
+                format!(
+                    "{} isn't a git clone on a branch, so there's nothing to deploy on push",
+                    app.name
+                ),
+            )
+        })
 }
 
 /// The app's push-webhook URL and secret (created on first request).
@@ -372,8 +370,12 @@ async fn webhook(
     Path(name): Path<String>,
 ) -> ApiResult<Json<WebhookInfo>> {
     let app = record(&daemon, &name)?;
-    let secret = crate::hooks::secret(&daemon, &name)?;
-    Ok(Json(webhook_info(&daemon, &app, secret).await?))
+    let branch = webhook_branch(&app).await?;
+    Ok(Json(WebhookInfo {
+        url: crate::hooks::url(&daemon, &name),
+        secret: crate::hooks::secret(&daemon, &name)?,
+        branch: Some(branch),
+    }))
 }
 
 async fn rotate_webhook(
@@ -381,8 +383,12 @@ async fn rotate_webhook(
     Path(name): Path<String>,
 ) -> ApiResult<Json<WebhookInfo>> {
     let app = record(&daemon, &name)?;
-    let secret = crate::hooks::rotate_secret(&daemon, &name)?;
-    Ok(Json(webhook_info(&daemon, &app, secret).await?))
+    let branch = webhook_branch(&app).await?;
+    Ok(Json(WebhookInfo {
+        url: crate::hooks::url(&daemon, &name),
+        secret: crate::hooks::rotate_secret(&daemon, &name)?,
+        branch: Some(branch),
+    }))
 }
 
 /// `git pull` in the app's folder, then deploy. For apps that are git clones.

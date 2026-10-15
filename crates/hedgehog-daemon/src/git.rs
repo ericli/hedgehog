@@ -33,10 +33,16 @@ pub fn validate_url(url: &str) -> Result<(), String> {
         || url.starts_with('-')
         || url.contains("::")
         || url.chars().any(|c| c.is_whitespace() || c.is_control());
-    let scp_like = url.contains('@')
-        && url
-            .split_once(':')
-            .is_some_and(|(host, _)| !host.contains('/'));
+    // `[user@]host:path`, as git reads it: no scheme, and no slash before
+    // the first colon.
+    let scp_like = !url.contains("://")
+        && url.split_once(':').is_some_and(|(authority, path)| {
+            !path.is_empty()
+                && !authority.contains('/')
+                && authority
+                    .split_once('@')
+                    .is_some_and(|(user, host)| !user.is_empty() && !host.is_empty())
+        });
     let known = ["https://", "ssh://", "file://", "/"]
         .iter()
         .any(|prefix| url.starts_with(prefix));
@@ -46,6 +52,22 @@ pub fn validate_url(url: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The `user:token` part of an https URL, which must never be printed.
+pub fn credentials(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split('/').next()?;
+    let (userinfo, _) = authority.rsplit_once('@')?;
+    (!userinfo.is_empty()).then_some(userinfo)
+}
+
+/// The URL with any https credentials replaced, for showing in logs.
+pub fn redact_url(url: &str) -> String {
+    match credentials(url) {
+        Some(secret) => url.replacen(secret, "•••", 1),
+        None => url.to_string(),
+    }
 }
 
 /// Branch names hedgehog will pass to git.
@@ -84,8 +106,11 @@ pub async fn clone(
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error).context(format!("git clone failed. {CREDENTIALS_HINT}"));
     }
-    std::fs::rename(&staging, dest)
-        .with_context(|| format!("could not move the clone to {}", dest.display()))?;
+    if let Err(error) = std::fs::rename(&staging, dest) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error)
+            .with_context(|| format!("could not move the clone to {}", dest.display()));
+    }
     Ok(())
 }
 
@@ -143,9 +168,26 @@ mod tests {
             "http://github.com/me/budget",
             "github.com/me/budget",
             "https://github.com/me/bud get",
+            // scheme://user@host URLs must not pass as scp-like
+            "http://x@evil.example/repo",
+            "ftp://u@h/r",
+            "git://u@h/r",
+            "foo://git@github.com/me/budget",
+            "git@github.com:",
+            "@github.com:me/budget",
         ] {
             assert!(validate_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn redacts_credentials() {
+        let url = "https://x-access-token:ghp_secret@github.com/me/app.git";
+        assert_eq!(credentials(url), Some("x-access-token:ghp_secret"));
+        assert_eq!(redact_url(url), "https://•••@github.com/me/app.git");
+        assert_eq!(credentials("https://github.com/me/app"), None);
+        assert_eq!(credentials("git@github.com:me/app"), None);
+        assert_eq!(redact_url("git@github.com:me/app"), "git@github.com:me/app");
     }
 
     #[test]

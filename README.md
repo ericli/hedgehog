@@ -89,7 +89,7 @@ hedgehog webhook budget                        # or the app's Settings tab in th
 - **Every call is checked.** hedgehog verifies GitHub's signature on each webhook call and ignores pushes to other branches.
 - **Pushes during a deploy don't pile up.** At most one extra deploy is queued behind the running one.
 - **The secret can't do much.** It only tells hedgehog to pull what's already on GitHub and deploy it. It can't upload code, unlike the API token. `hedgehog webhook budget --rotate` replaces it.
-- **Missed pushes need a nudge.** If the Mac was offline during a push, GitHub doesn't retry; tap **Pull & redeploy** in the dashboard or run `hedgehog redeploy`.
+- **Missed pushes need a nudge.** If the Mac was offline during a push, GitHub doesn't retry; tap **Pull & redeploy** in the dashboard or run `hedgehog pull <app>`.
 - **Private repos** need the Mac to be able to fetch without a prompt, e.g. with an SSH key or `gh auth login`.
 
 ### With GitHub Actions
@@ -140,6 +140,8 @@ Your apps never see hedgehog's cookie, and they receive `X-Forwarded-Proto: http
 On an admin device, `https://<id>.opentunnel.xyz` (the address `hedgehog status` shows as "home") is a dashboard for your hedgehog. It works on a phone.
 
 On a computer, `hedgehog dashboard` opens it already signed in. It uses a one-time admin link, works on the hedgehog Mac or from your laptop, and won't add a duplicate device for a browser that's already signed in. To give it its own window and Dock icon, use **File → Add to Dock** in Safari.
+
+Each app is a square block: red if it's private, green if it's public, and marked in orange if a deploy failed. Opening a block shows its output and logs alongside its details and actions.
 
 From the dashboard you can:
 
@@ -208,6 +210,7 @@ NODE_ENV = "production"
 hedgehog setup                    set up this Mac (daemon at login, tunnel, pair your phone)
 hedgehog deploy [path]            upload a folder and deploy it
 hedgehog redeploy <app>           rebuild from the folder already on the hedgehog Mac
+hedgehog pull <app>               git pull the app's folder on the hedgehog Mac, then redeploy
 hedgehog new <git-url>            clone a repo on the hedgehog Mac and deploy it (--name, --branch)
 hedgehog webhook <app> [--rotate] the GitHub webhook that deploys an app on every push
 hedgehog ls                       apps, status, URLs

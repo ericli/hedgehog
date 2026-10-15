@@ -82,9 +82,6 @@ struct Scanner {
     pending: HashMap<PathBuf, (Fingerprint, Instant)>,
     /// Folders already warned about, so the log isn't spammed.
     warned: HashSet<PathBuf>,
-    /// Last revision a deploy was started for, per app, so a failing commit
-    /// isn't retried every few seconds.
-    attempted: HashMap<String, String>,
 }
 
 impl Scanner {
@@ -113,7 +110,10 @@ impl Scanner {
         }
         for app in daemon.store.apps()? {
             let gone = app.source_dir.starts_with(&daemon.paths.apps) && !app.source_dir.exists();
-            if gone && !daemon.is_busy(&app.name) {
+            // An app that never deployed and has no folder is a failed
+            // "new app"; keep it so its error stays visible.
+            let ever_deployed = app.deployed_at.is_some() || app.container.is_some();
+            if gone && ever_deployed && !daemon.is_busy(&app.name) {
                 info!(
                     app = app.name,
                     "its folder was removed; removing the app (data and database are kept)"
@@ -142,7 +142,11 @@ impl Scanner {
             self.pending.remove(dir);
             daemon.store.upsert_app(name, dir)?;
             if let Some(revision) = git_revision(dir).await {
-                self.attempted.insert(name.to_string(), revision);
+                daemon
+                    .attempted_revisions
+                    .lock()
+                    .unwrap()
+                    .insert(name.to_string(), revision);
             }
             info!(app = name, folder = %dir.display(), "found a new app");
             daemon.spawn_deploy(name.to_string(), Source::Folder, "new folder");
@@ -151,7 +155,7 @@ impl Scanner {
     }
 
     /// Redeploys when a git folder moves to a new commit (`git pull`).
-    async fn check_revision(&mut self, daemon: &Arc<Daemon>, app: &AppRecord) {
+    async fn check_revision(&self, daemon: &Arc<Daemon>, app: &AppRecord) {
         if app.stopped || daemon.is_busy(&app.name) {
             return;
         }
@@ -159,9 +163,16 @@ impl Scanner {
             return;
         };
         let deployed = app.revision.as_deref() == Some(revision.as_str());
-        let attempted = self.attempted.get(&app.name) == Some(&revision);
+        // Any deploy (webhook, pull, CLI) records the commit it tried, so a
+        // commit that just failed isn't rebuilt here straight away.
+        let attempted =
+            daemon.attempted_revisions.lock().unwrap().get(&app.name) == Some(&revision);
         if !deployed && !attempted && app.status != AppStatus::New {
-            self.attempted.insert(app.name.clone(), revision);
+            daemon
+                .attempted_revisions
+                .lock()
+                .unwrap()
+                .insert(app.name.clone(), revision);
             daemon.spawn_deploy(app.name.clone(), Source::Folder, "new commit");
         }
     }

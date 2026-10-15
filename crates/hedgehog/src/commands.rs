@@ -50,6 +50,13 @@ pub async fn run(cli: Cli) -> Result<()> {
             branch,
         } => new_app(&client()?, git_url, name, branch).await,
         Command::Webhook { app, rotate } => webhook(&client()?, &app, rotate).await,
+        Command::Pull { app } => {
+            let client = client()?;
+            let response = client
+                .send_empty(Method::POST, &format!("/v1/apps/{app}/pull"))
+                .await?;
+            follow_events(&client, &app, response).await
+        }
         Command::Ls => list(&client()?).await,
         Command::Logs {
             app,
@@ -185,11 +192,17 @@ async fn new_app(
         Some(name) => name,
         None => repo_name_from_git_url(&git_url)
             .and_then(app_name_from_dir)
-            .with_context(|| format!("can't make an app name from `{git_url}`; pass --name"))?,
+            .with_context(|| {
+                format!(
+                    "can't make an app name from `{}`; pass --name",
+                    hedgehog_daemon::git::redact_url(&git_url)
+                )
+            })?,
     };
     println!(
-        "{} {name} from {git_url} on {}",
+        "{} {name} from {} on {}",
         bold("Creating"),
+        hedgehog_daemon::git::redact_url(&git_url),
         client.label
     );
     let request = CreateApp {
@@ -298,7 +311,9 @@ async fn wait_for_deploy(client: &Client, app: &str) -> Result<()> {
                 let Some(info) = apps.into_iter().find(|info| info.name == app) else {
                     bail!("{app} disappeared while deploying. Check `hedgehog ls`");
                 };
-                if info.status == AppStatus::Building {
+                // `New` is the moment between an upload landing and its
+                // build starting; it isn't finished either.
+                if matches!(info.status, AppStatus::Building | AppStatus::New) {
                     continue;
                 }
                 return match info.last_error {

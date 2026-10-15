@@ -115,10 +115,15 @@ impl Client {
         path: &str,
         build: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
     ) -> Result<Response> {
-        // Reads are safe to repeat, so they ride out a dropped connection
-        // (the tunnel reconnects for a few seconds when an app is added or
-        // removed). Anything that changes state is sent once.
-        let mut attempts_left = if method == Method::GET { 3 } else { 1 };
+        // Reads are safe to repeat, so through a remote they ride out a
+        // dropped connection (the tunnel reconnects for a few seconds when an
+        // app is added or removed). Anything that changes state is sent once,
+        // and a local daemon that isn't running is reported straight away.
+        let mut attempts_left = if method == Method::GET && !self.local {
+            3
+        } else {
+            1
+        };
         let mut request = build(
             self.http
                 .request(method, self.url(path))
@@ -128,7 +133,7 @@ impl Client {
             let spare = (attempts_left > 1).then(|| request.try_clone()).flatten();
             match request.send().await {
                 Ok(response) => break response,
-                Err(error) if spare.is_some() && !error.is_status() => {
+                Err(error) if spare.is_some() && !error.is_builder() => {
                     attempts_left -= 1;
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     request = spare.unwrap();

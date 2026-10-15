@@ -40,6 +40,19 @@ pub enum Source {
     Clone { url: String, branch: Option<String> },
 }
 
+/// A log callback that forwards lines to the deploy's events, with `secret`
+/// (e.g. a token in a clone URL) blanked out.
+fn log_sink(events: &Events, secret: Option<String>) -> impl Fn(String) + Send + Sync + use<> {
+    let events = events.clone();
+    move |line: String| {
+        let line = match &secret {
+            Some(secret) => line.replace(secret.as_str(), "•••"),
+            None => line,
+        };
+        let _ = events.send(DeployEvent::Log { line });
+    }
+}
+
 fn step(events: &Events, message: impl Into<String>) {
     let _ = events.send(DeployEvent::Step {
         message: message.into(),
@@ -74,6 +87,15 @@ impl Daemon {
     pub async fn deploy(self: &Arc<Self>, app: &str, source: Source, events: Events) -> Result<()> {
         let lock = self.lock(app);
         let _guard = lock.lock().await;
+        // Checked again under the lock: two "new app" requests can race. The
+        // loser must not touch the winner's status.
+        if matches!(source, Source::Clone { .. }) && self.name_taken(app)? {
+            let error = format!("there's already an app (or a folder) called {app}");
+            let _ = events.send(DeployEvent::Failed {
+                error: error.clone(),
+            });
+            bail!(error);
+        }
         let result = self.deploy_locked(app, source, &events).await;
         self.sync_routes_soon();
         self.finish(app, result, &events)
@@ -130,6 +152,17 @@ impl Daemon {
         }
     }
 
+    /// Whether a new app can't use this name: its folder exists, or an app
+    /// by that name has ever been deployed. A failed first clone leaves a
+    /// record behind but doesn't take the name.
+    pub fn name_taken(&self, app: &str) -> Result<bool> {
+        let deployed = self
+            .store
+            .app(app)?
+            .is_some_and(|record| record.deployed_at.is_some() || record.container.is_some());
+        Ok(deployed || self.paths.app_source(app).exists())
+    }
+
     fn record(&self, app: &str) -> Result<AppRecord> {
         self.store
             .app(app)?
@@ -149,14 +182,13 @@ impl Daemon {
             self.store.upsert_app(app, &dir)?;
         }
         if let Source::Clone { url, branch } = &source {
-            step(events, format!("cloning {url}"));
+            step(events, format!("cloning {}", git::redact_url(url)));
             let dir = self.paths.app_source(app);
-            let log_events = events.clone();
-            let log = move |line: String| {
-                let _ = log_events.send(DeployEvent::Log { line });
-            };
-            git::clone(url, branch.as_deref(), &self.paths.incoming(), &dir, &log).await?;
+            // Registered first, so a failed clone shows up as a failed app.
             self.store.upsert_app(app, &dir)?;
+            self.store.set_status(app, AppStatus::Building, None)?;
+            let log = log_sink(events, git::credentials(url).map(str::to_string));
+            git::clone(url, branch.as_deref(), &self.paths.incoming(), &dir, &log).await?;
         }
         let record = self.record(app)?;
         let dir = record.source_dir.clone();
@@ -165,11 +197,7 @@ impl Daemon {
         }
         if let Source::Pull = source {
             step(events, "pulling the latest commits");
-            let log_events = events.clone();
-            let log = move |line: String| {
-                let _ = log_events.send(DeployEvent::Log { line });
-            };
-            git::pull(&dir, &log).await?;
+            git::pull(&dir, &log_sink(events, None)).await?;
         }
         let manifest = Manifest::load(&dir)?;
         self.store.set_status(app, AppStatus::Building, None)?;
@@ -178,6 +206,13 @@ impl Daemon {
         let deploy_id = new_deploy_id();
         let image = docker::image_name(app, &deploy_id);
         let revision = git::revision(&dir).await;
+        if let Some(revision) = &revision {
+            // So the folder scanner doesn't rebuild this commit if it fails.
+            self.attempted_revisions
+                .lock()
+                .unwrap()
+                .insert(app.to_string(), revision.clone());
+        }
         let builder = manifest.builder(&dir);
         step(
             events,

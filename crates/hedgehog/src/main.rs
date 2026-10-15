@@ -40,6 +40,8 @@ enum Command {
     },
     /// Rebuild an app from the folder already on the hedgehog Mac.
     Redeploy { app: String },
+    /// `git pull` an app's folder on the hedgehog Mac, then redeploy it.
+    Pull { app: String },
     /// Create an app by cloning a Git repository on the hedgehog Mac.
     New {
         /// https://github.com/you/repo, git@github.com:you/repo, or a path on the Mac.

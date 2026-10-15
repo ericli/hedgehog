@@ -59,6 +59,9 @@ pub struct Daemon {
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Apps with a webhook-triggered deploy waiting to start.
     pending_pulls: Mutex<HashSet<String>>,
+    /// The last commit each app tried to deploy, whoever started it, so the
+    /// folder scanner doesn't rebuild a commit that just failed.
+    pub(crate) attempted_revisions: Mutex<HashMap<String, String>>,
 }
 
 impl Daemon {
@@ -132,6 +135,8 @@ pub async fn run(paths: Paths, options: Options) -> Result<()> {
             .with_context(|| format!("could not create {}", dir.display()))?;
     }
     let token = auth::ApiToken::load(&paths.token())?;
+    // Nothing is mid-upload or mid-clone at startup, so leftovers can go.
+    upload::sweep_incoming(&paths);
     let store = Arc::new(Store::open(&paths.database())?);
     let mut docker = connect_docker().await;
     docker.set_cli_config(docker::prepare_cli_config(&paths.state.join("docker"))?);
@@ -147,6 +152,7 @@ pub async fn run(paths: Paths, options: Options) -> Result<()> {
         token,
         locks: Mutex::default(),
         pending_pulls: Mutex::default(),
+        attempted_revisions: Mutex::default(),
     });
     daemon.gateway.set_api(
         api::dashboard_router(daemon.clone()),

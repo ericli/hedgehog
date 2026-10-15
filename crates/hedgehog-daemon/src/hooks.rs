@@ -3,12 +3,11 @@
 //! A webhook secret can only trigger "pull what's on the remote and deploy",
 //! never upload code, so it is much less powerful than the API token.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::Router;
-use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Path, Request, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use hmac::{Hmac, KeyInit, Mac};
@@ -21,8 +20,12 @@ use crate::Daemon;
 use crate::deploy::Source;
 use crate::secrets::random_token;
 
-/// GitHub caps payloads at 25 MB; pushes are normally a few KB.
-const MAX_PAYLOAD: usize = 25 * 1024 * 1024;
+/// Push payloads are normally a few KB; GitHub truncates huge ones anyway.
+const MAX_PAYLOAD: usize = 5 * 1024 * 1024;
+
+/// This endpoint is public, so only a few bodies are read at once, and only
+/// after the app and the signature header have checked out.
+static READING: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(4));
 
 pub fn secret_key(app: &str) -> String {
     format!("webhook.secret.{app}")
@@ -72,10 +75,7 @@ struct Push {
 
 pub fn router(daemon: Arc<Daemon>) -> Router {
     Router::new()
-        .route(
-            "/_hedgehog/hooks/{app}",
-            post(receive).layer(DefaultBodyLimit::max(MAX_PAYLOAD)),
-        )
+        .route("/_hedgehog/hooks/{app}", post(receive))
         .with_state(daemon)
 }
 
@@ -86,18 +86,27 @@ fn reply(status: StatusCode, message: &str) -> Response {
 async fn receive(
     State(daemon): State<Arc<Daemon>>,
     Path(app): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
+    request: Request,
 ) -> Response {
+    let headers = request.headers().clone();
     let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
     // Unknown apps and apps without a secret look the same to outsiders.
     let secret = match daemon.store.setting(&secret_key(&app)) {
         Ok(Some(secret)) => secret,
         _ => return reply(StatusCode::NOT_FOUND, "no webhook here"),
     };
-    let signed = header("x-hub-signature-256")
-        .is_some_and(|signature| verify_signature(&secret, &body, signature));
-    if !signed {
+    let Some(signature) =
+        header("x-hub-signature-256").filter(|value| value.starts_with("sha256="))
+    else {
+        return reply(StatusCode::UNAUTHORIZED, "bad signature");
+    };
+    let Ok(_reading) = READING.try_acquire() else {
+        return reply(StatusCode::TOO_MANY_REQUESTS, "busy; try again");
+    };
+    let Ok(body) = axum::body::to_bytes(request.into_body(), MAX_PAYLOAD).await else {
+        return reply(StatusCode::PAYLOAD_TOO_LARGE, "payload too large");
+    };
+    if !verify_signature(&secret, &body, signature) {
         warn!(
             app,
             "rejected a webhook call with a missing or wrong signature"
@@ -121,6 +130,12 @@ async fn push(daemon: &Arc<Daemon>, app: &str, body: &[u8]) -> Response {
     let Ok(Some(record)) = daemon.store.app(app) else {
         return reply(StatusCode::NOT_FOUND, "no webhook here");
     };
+    if record.stopped {
+        return reply(
+            StatusCode::ACCEPTED,
+            "ignored: the app is stopped (start it to deploy again)",
+        );
+    }
     let Some(branch) = crate::git::current_branch(&record.source_dir).await else {
         return reply(
             StatusCode::CONFLICT,
@@ -156,6 +171,10 @@ impl Daemon {
             // Let any deploy in progress finish; it may predate the push.
             drop(daemon.lock(&app).lock().await);
             daemon.pending_pulls.lock().unwrap().remove(&app);
+            // It may have been stopped or removed while this waited.
+            if !matches!(daemon.store.app(&app), Ok(Some(record)) if !record.stopped) {
+                return;
+            }
             let events = daemon.log_events(&app);
             let _ = daemon.deploy(&app, Source::Pull, events).await;
         });

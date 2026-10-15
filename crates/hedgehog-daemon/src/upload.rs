@@ -31,6 +31,21 @@ pub fn replace_folder(paths: &Paths, archive: &Path, dest: &Path) -> Result<()> 
     Ok(())
 }
 
+/// Deletes whatever an interrupted upload or clone left in `apps/.incoming`.
+pub fn sweep_incoming(paths: &Paths) {
+    let Ok(entries) = std::fs::read_dir(paths.incoming()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let _ = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+    }
+}
+
 /// Moves a folder to `~/.Trash` (so it can be recovered), falling back to
 /// `apps/.trash` if macOS won't let us.
 pub fn move_to_trash(paths: &Paths, dir: &Path) -> Result<PathBuf> {
@@ -112,6 +127,22 @@ mod tests {
         assert!(!dest.join("stale.txt").exists());
         let leftovers: Vec<_> = std::fs::read_dir(paths.incoming()).unwrap().collect();
         assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn sweeps_leftovers_from_incoming() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::under(root.path().to_path_buf());
+        std::fs::create_dir_all(paths.incoming().join("clone-abc/.git")).unwrap();
+        std::fs::write(paths.incoming().join("upload-x.tar.gz"), "x").unwrap();
+        sweep_incoming(&paths);
+        assert!(
+            std::fs::read_dir(paths.incoming())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        sweep_incoming(&Paths::under(root.path().join("missing")));
     }
 
     #[test]
