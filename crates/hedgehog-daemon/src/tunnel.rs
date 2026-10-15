@@ -124,6 +124,11 @@ impl TunnelManager {
         Some(identity.hostname)
     }
 
+    /// Names of the routes currently published.
+    pub fn published(&self) -> Vec<String> {
+        self.routes.lock().unwrap().keys().cloned().collect()
+    }
+
     /// Replaces the published routes if they changed.
     pub fn set_routes(&self, routes: Routes) {
         let tunnel = self.tunnel.lock().unwrap();

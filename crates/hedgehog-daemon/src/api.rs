@@ -28,9 +28,10 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{info, warn};
 
+use crate::auth::Check;
 use crate::deploy::Source;
 use crate::gateway::{CurrentDevice, PAIR_PATH};
-use crate::secrets::{constant_time_eq, hash_token, now, random_token};
+use crate::secrets::{hash_token, now, random_token};
 use crate::store::{AppRecord, PairGrant};
 use crate::{Daemon, VERSION, build};
 
@@ -98,20 +99,29 @@ fn routes(daemon: AppState) -> Router<()> {
         .route("/v1/pair", post(pair))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", delete(revoke_device))
+        .route("/v1/token/rotate", post(rotate_token))
         .with_state(daemon)
 }
 
 async fn require_token(State(daemon): State<AppState>, request: Request, next: Next) -> Response {
-    let authorized = request
+    let presented = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| constant_time_eq(token, &daemon.token));
-    if authorized {
-        next.run(request).await
-    } else {
-        ApiError(StatusCode::UNAUTHORIZED, "missing or wrong token".into()).into_response()
+        .and_then(|value| value.strip_prefix("Bearer "));
+    match daemon.token.check(presented) {
+        Check::Valid => next.run(request).await,
+        Check::Invalid => {
+            ApiError(StatusCode::UNAUTHORIZED, "missing or wrong token".into()).into_response()
+        }
+        Check::Throttled => {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many wrong tokens; slow down".into(),
+            )
+            .into_response()
+        }
     }
 }
 
@@ -456,6 +466,13 @@ fn qr_svg(text: &str) -> Option<String> {
             .quiet_zone(true)
             .build(),
     )
+}
+
+/// Issues a new API token; the old one stops working right away.
+async fn rotate_token(State(daemon): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let token = daemon.token.rotate()?;
+    info!("API token rotated");
+    Ok(Json(serde_json::json!({ "token": token })))
 }
 
 async fn devices(

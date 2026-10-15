@@ -45,6 +45,13 @@ const DASHBOARD: &str = include_str!("dashboard.html");
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Body = UnsyncBoxBody<Bytes, BoxError>;
 
+struct ApiRouters {
+    /// For admin devices; the gateway checks the device first.
+    dashboard: axum::Router,
+    /// For the CLI; checks the bearer token itself.
+    cli: axum::Router,
+}
+
 /// The paired device making a dashboard API request; handlers can read it.
 #[derive(Debug, Clone)]
 pub struct CurrentDevice(pub String);
@@ -80,8 +87,8 @@ struct Inner {
     hostname: RwLock<Option<String>>,
     home_port: u16,
     client: Client<HttpConnector, Incoming>,
-    /// Control API handlers for the dashboard, set once the daemon is built.
-    api: OnceLock<axum::Router>,
+    /// Control API handlers, set once the daemon is built.
+    api: OnceLock<ApiRouters>,
 }
 
 #[derive(Clone)]
@@ -115,9 +122,12 @@ impl Gateway {
         self.inner.home_port
     }
 
-    /// Serves these control API routes to admin devices under [`API_PREFIX`].
-    pub fn set_api(&self, router: axum::Router) {
-        let _ = self.inner.api.set(router);
+    /// Serves the control API on the home address: `dashboard` to admin
+    /// devices under [`API_PREFIX`], and `cli` (which checks the bearer token)
+    /// at `/v1/...` for requests carrying a token, so the CLI can reach this
+    /// Mac through the tunnel.
+    pub fn set_api(&self, dashboard: axum::Router, cli: axum::Router) {
+        let _ = self.inner.api.set(ApiRouters { dashboard, cli });
     }
 
     pub fn set_hostname(&self, hostname: Option<String>) {
@@ -307,6 +317,9 @@ async fn handle_home(inner: &Inner, request: Request<Incoming>) -> Response<Body
     if path.starts_with(&format!("{API_PREFIX}/")) {
         return dashboard_api(inner, request).await;
     }
+    if path.starts_with("/v1/") && request.headers().contains_key(header::AUTHORIZATION) {
+        return cli_api(inner, request).await;
+    }
     if path != "/" {
         return html(StatusCode::NOT_FOUND, pages::wall());
     }
@@ -398,7 +411,7 @@ async fn dashboard_api(inner: &Inner, mut request: Request<Incoming>) -> Respons
             "requests must come from the dashboard",
         );
     }
-    let Some(router) = inner.api.get().cloned() else {
+    let Some(router) = inner.api.get().map(|api| api.dashboard.clone()) else {
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "hedgehog is still starting",
@@ -418,6 +431,22 @@ async fn dashboard_api(inner: &Inner, mut request: Request<Incoming>) -> Respons
     }
     request.headers_mut().remove(header::COOKIE);
     request.extensions_mut().insert(CurrentDevice(device.id));
+    call_api(router, request).await
+}
+
+/// CLI requests through the tunnel. The router checks the token.
+async fn cli_api(inner: &Inner, mut request: Request<Incoming>) -> Response<Body> {
+    let Some(router) = inner.api.get().map(|api| api.cli.clone()) else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "hedgehog is still starting",
+        );
+    };
+    request.headers_mut().remove(header::COOKIE);
+    call_api(router, request).await
+}
+
+async fn call_api(router: axum::Router, request: Request<Incoming>) -> Response<Body> {
     let response = match tower::ServiceExt::oneshot(router, request).await {
         Ok(response) => response,
         Err(never) => match never {},
@@ -834,15 +863,18 @@ mod tests {
     async fn dashboard_is_for_admin_devices_and_same_origin_only() {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let gateway = Gateway::start(store.clone()).await.unwrap();
-        gateway.set_api(axum::Router::new().route(
-            "/v1/whoami",
-            axum::routing::get(
-                |axum::Extension(CurrentDevice(id)): axum::Extension<CurrentDevice>,
-                 headers: HeaderMap| async move {
-                    format!("{id} cookie={}", headers.contains_key(header::COOKIE))
-                },
+        gateway.set_api(
+            axum::Router::new().route(
+                "/v1/whoami",
+                axum::routing::get(
+                    |axum::Extension(CurrentDevice(id)): axum::Extension<CurrentDevice>,
+                     headers: HeaderMap| async move {
+                        format!("{id} cookie={}", headers.contains_key(header::COOKIE))
+                    },
+                ),
             ),
-        ));
+            axum::Router::new(),
+        );
         let home = gateway.home_port();
         let admin = pair_device(&gateway, &store, "admin-code", true).await;
         let viewer = pair_device(&gateway, &store, "viewer-code", false).await;
@@ -894,6 +926,46 @@ mod tests {
         let same = [(API_HEADER, "1"), ("origin", own.as_str())];
         let (status, _, _) = send(home, &api, Some(&admin), &same).await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn cli_requests_with_a_token_reach_the_cli_api_on_the_home_address_only() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let gateway = Gateway::start(store.clone()).await.unwrap();
+        let cli = axum::Router::new().route(
+            "/v1/status",
+            axum::routing::get(|headers: HeaderMap| async move {
+                let token = headers[header::AUTHORIZATION].to_str().unwrap().to_string();
+                format!(
+                    "cli {token} cookie={}",
+                    headers.contains_key(header::COOKIE)
+                )
+            }),
+        );
+        gateway.set_api(axum::Router::new(), cli);
+        let upstream = echo_upstream().await;
+        let app_port = gateway
+            .set_app(
+                "budget",
+                Upstream {
+                    port: Some(upstream),
+                    public: true,
+                    reason: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let bearer = [("authorization", "Bearer abc")];
+        let home = gateway.home_port();
+
+        let (status, _, body) = send(home, "/v1/status", Some("x=1"), &bearer).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "cli Bearer abc cookie=false");
+        let (status, _, _) = get(home, "/v1/status", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "no token, no API");
+        let (status, _, body) = send(app_port, "/v1/status", None, &bearer).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.starts_with("cookie="), "app hosts never serve the API");
     }
 
     #[test]

@@ -90,6 +90,7 @@ impl Daemon {
         let lock = self.lock(app);
         let _guard = lock.lock().await;
         let result = self.deploy_locked(app, source, &events).await;
+        self.sync_routes_soon();
         self.finish(app, result, &events)
     }
 
@@ -115,6 +116,7 @@ impl Daemon {
             }
             _ => self.deploy_locked(app, Source::Folder, &events).await,
         };
+        self.sync_routes_soon();
         self.finish(app, result, &events)
     }
 
@@ -221,7 +223,6 @@ impl Daemon {
                 reason: "It's being set up. Try again in a minute.".to_string(),
             };
             self.gateway.set_app(&record.name, upstream).await?;
-            self.sync_routes();
         }
         Ok(())
     }
@@ -282,7 +283,6 @@ impl Daemon {
                 },
             )
             .await?;
-        self.sync_routes();
 
         for old in self.docker.app_containers(app).await? {
             if old != container {
@@ -403,7 +403,7 @@ impl Daemon {
 
     /// Forgets an app: removes its containers and images and moves its folder
     /// to the Trash. `purge` also deletes its data folder and database.
-    pub async fn remove_app(&self, app: &str, purge: bool) -> Result<()> {
+    pub async fn remove_app(self: &Arc<Self>, app: &str, purge: bool) -> Result<()> {
         let lock = self.lock(app);
         let _guard = lock.lock().await;
         let record = self.record(app)?;
@@ -411,7 +411,7 @@ impl Daemon {
             self.docker.remove(&container).await?;
         }
         self.gateway.remove_app(app);
-        self.sync_routes();
+        self.sync_routes_soon();
         self.store.delete_app(app)?;
         if record.source_dir.starts_with(&self.paths.apps) && record.source_dir.exists() {
             let trashed = crate::upload::move_to_trash(&self.paths, &record.source_dir)?;

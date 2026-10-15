@@ -42,7 +42,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             let response = client
                 .send_empty(Method::POST, &format!("/v1/apps/{app}/deploy"))
                 .await?;
-            follow_events(response).await
+            follow_events(&client, &app, response).await
         }
         Command::Ls => list(&client()?).await,
         Command::Logs {
@@ -53,10 +53,11 @@ pub async fn run(cli: Cli) -> Result<()> {
         } => logs(&client()?, &app, follow, lines, build).await,
         Command::Env { app, action } => env(&client()?, &app, action).await,
         Command::Restart { app } | Command::Start { app } => {
-            let response = client()?
+            let client = client()?;
+            let response = client
                 .send_empty(Method::POST, &format!("/v1/apps/{app}/restart"))
                 .await?;
-            follow_events(response).await
+            follow_events(&client, &app, response).await
         }
         Command::Stop { app } => {
             client()?
@@ -88,8 +89,8 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Db { action } => crate::db::run(&paths, remote, action).await,
         Command::Status => status(&client()?).await,
         Command::Doctor => doctor(&paths, remote).await,
-        Command::Token => token(&paths).await,
-        Command::Remote { action } => remote_command(&paths, action),
+        Command::Token { rotate } => token(&paths, remote, rotate).await,
+        Command::Remote { action } => remote_command(&paths, action).await,
         Command::Daemon { action } => daemon(&paths, action).await,
     }
 }
@@ -164,15 +165,19 @@ async fn deploy(client: &Client, path: Option<PathBuf>, name: Option<String>) ->
             },
         )
         .await?;
-    follow_events(response).await
+    follow_events(client, &name, response).await
 }
 
 /// Prints a deploy's NDJSON progress stream until it finishes.
-async fn follow_events(response: reqwest::Response) -> Result<()> {
+/// Prints a deploy's NDJSON progress stream until it finishes. If the stream
+/// drops first (a flaky network, or the tunnel reconnecting), the deploy keeps
+/// going on the hedgehog Mac, so wait for it there instead of giving up.
+async fn follow_events(client: &Client, app: &str, response: reqwest::Response) -> Result<()> {
     let mut stream = response.bytes_stream();
     let mut buffer = Vec::new();
     while let Some(chunk) = stream.next().await {
-        buffer.extend_from_slice(&chunk?);
+        let Ok(chunk) = chunk else { break };
+        buffer.extend_from_slice(&chunk);
         while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=newline).collect();
             let Ok(event) = serde_json::from_slice::<DeployEvent>(&line) else {
@@ -181,23 +186,70 @@ async fn follow_events(response: reqwest::Response) -> Result<()> {
             match event {
                 DeployEvent::Step { message } => println!("{} {message}", bold("==>")),
                 DeployEvent::Log { line } => println!("    {}", dim(&line)),
-                DeployEvent::Done { url } => {
-                    match url {
-                        Some(url) => println!("\n{} {}", green("✓ Live at"), bold(&url)),
-                        None => println!("\n{}", green("✓ Deployed")),
-                    }
-                    return Ok(());
-                }
-                DeployEvent::Failed { error } => {
-                    eprintln!("\n{} {error}", red("✗ Deploy failed:"));
-                    return Err(Reported.into());
-                }
+                DeployEvent::Done { url } => return report_done(url.as_deref()),
+                DeployEvent::Failed { error } => return report_failed(app, &error),
             }
         }
     }
-    bail!(
-        "lost the connection before the deploy finished. Check `hedgehog ls` and `hedgehog logs <app> --build`"
-    )
+    println!(
+        "{}",
+        dim("The connection dropped; the deploy carries on. Waiting for it to finish…")
+    );
+    wait_for_deploy(client, app).await
+}
+
+fn report_done(url: Option<&str>) -> Result<()> {
+    match url {
+        Some(url) => println!("\n{} {}", green("✓ Live at"), bold(url)),
+        None => println!("\n{}", green("✓ Deployed")),
+    }
+    Ok(())
+}
+
+fn report_failed(app: &str, error: &str) -> Result<()> {
+    eprintln!("\n{} {error}", red("✗ Deploy failed:"));
+    eprintln!(
+        "{}",
+        dim(&format!("Full build output: hedgehog logs {app} --build"))
+    );
+    Err(Reported.into())
+}
+
+/// Polls the app until it is no longer building, riding out reconnects.
+async fn wait_for_deploy(client: &Client, app: &str) -> Result<()> {
+    const POLL: Duration = Duration::from_secs(2);
+    const GIVE_UP: Duration = Duration::from_secs(35 * 60);
+    let started = Instant::now();
+    let mut unreachable_since: Option<Instant> = None;
+    loop {
+        tokio::time::sleep(POLL).await;
+        match client.get::<Vec<AppInfo>>("/v1/apps").await {
+            Ok(apps) => {
+                unreachable_since = None;
+                let Some(info) = apps.into_iter().find(|info| info.name == app) else {
+                    bail!("{app} disappeared while deploying. Check `hedgehog ls`");
+                };
+                if info.status == AppStatus::Building {
+                    continue;
+                }
+                return match info.last_error {
+                    Some(error) => report_failed(app, &error),
+                    None => report_done(info.url.as_deref()),
+                };
+            }
+            Err(error) => {
+                let since = *unreachable_since.get_or_insert_with(Instant::now);
+                if since.elapsed() > Duration::from_secs(120) {
+                    return Err(error.context(format!(
+                        "lost touch with hedgehog while {app} was deploying. Check `hedgehog ls` later"
+                    )));
+                }
+            }
+        }
+        if started.elapsed() > GIVE_UP {
+            bail!("{app} is still building after 35 minutes. Check `hedgehog logs {app} --build`");
+        }
+    }
 }
 
 fn status_label(app: &AppInfo) -> String {
@@ -584,25 +636,92 @@ async fn tailscale_name() -> Option<String> {
     None
 }
 
-async fn token(paths: &Paths) -> Result<()> {
-    let token = std::fs::read_to_string(paths.token())
-        .map(|token| token.trim().to_string())
-        .context("this Mac isn't set up yet. Run `hedgehog setup` first")?;
-    let tailscale = tailscale_name().await;
-    let host = tailscale.as_deref().unwrap_or("<this-mac>");
+/// Where other machines can reach this hedgehog's API: the tunnel's home
+/// address, else Tailscale.
+async fn reachable_url(status: Option<&Status>) -> Option<String> {
+    if let Some(url) = status
+        .and_then(|status| status.home_url.clone())
+        .filter(|url| url.starts_with("https://"))
+    {
+        return Some(url);
+    }
+    let name = tailscale_name().await?;
+    Some(format!("http://{name}:{API_PORT}"))
+}
+
+async fn token(paths: &Paths, remote: Option<&str>, rotate: bool) -> Result<()> {
+    let client = Client::resolve(paths, remote)?;
+    // Ask for the address first: after rotating, our token is stale.
+    let status = client.get::<Status>("/v1/status").await.ok();
+    let url = reachable_url(status.as_ref()).await;
+    let token = if rotate {
+        let response: serde_json::Value = client
+            .send_empty(Method::POST, "/v1/token/rotate")
+            .await?
+            .json()
+            .await?;
+        let token = response["token"]
+            .as_str()
+            .context("unexpected response from the daemon")?
+            .to_string();
+        if let Some(name) = &client.remote {
+            let file = paths.remotes();
+            let mut remotes = RemotesFile::load(&file)?;
+            if let Some(entry) = remotes.remotes.get_mut(name) {
+                entry.token = token.clone();
+                remotes.save(&file)?;
+            }
+        }
+        println!(
+            "{} New token issued. The old one no longer works.\n",
+            green("✓")
+        );
+        token
+    } else {
+        if !client.local {
+            bail!(
+                "run `hedgehog token` on the hedgehog Mac itself (or `hedgehog token --rotate` from here to issue a new one)"
+            );
+        }
+        std::fs::read_to_string(paths.token())
+            .map(|token| token.trim().to_string())
+            .context("this Mac isn't set up yet. Run `hedgehog setup` first")?
+    };
     println!("{token}\n");
-    println!("On your laptop, run:\n");
-    println!("  hedgehog remote add home http://{host}:{API_PORT} --token {token}");
-    if tailscale.is_none() {
+    match url {
+        Some(url) => {
+            println!("On your laptop (or any machine), run:\n");
+            println!("  hedgehog remote add home {url} --token {token}");
+        }
+        None => println!(
+            "{}",
+            yellow(
+                "Other machines can't reach this Mac yet: the tunnel is off and Tailscale isn't running."
+            )
+        ),
+    }
+    if rotate {
         println!(
             "\n{}",
-            yellow("Tailscale isn't running here, so other machines can't reach this Mac yet.")
+            dim("Other machines that saved the old token need `hedgehog remote add` again.")
         );
     }
     Ok(())
 }
 
-fn remote_command(paths: &Paths, action: RemoteAction) -> Result<()> {
+/// `https://` unless an explicit port suggests a Tailscale address like `mini:7700`.
+fn normalize_remote_url(url: &str) -> String {
+    if url.contains("://") {
+        return url.trim_end_matches('/').to_string();
+    }
+    let has_port = url
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok());
+    let scheme = if has_port { "http" } else { "https" };
+    format!("{scheme}://{}", url.trim_end_matches('/'))
+}
+
+async fn remote_command(paths: &Paths, action: RemoteAction) -> Result<()> {
     let file = paths.remotes();
     let mut remotes = RemotesFile::load(&file)?;
     match action {
@@ -615,11 +734,7 @@ fn remote_command(paths: &Paths, action: RemoteAction) -> Result<()> {
             if name == "local" {
                 bail!("`local` always means this Mac; pick another name");
             }
-            let url = if url.contains("://") {
-                url
-            } else {
-                format!("http://{url}")
-            };
+            let url = normalize_remote_url(&url);
             remotes.remotes.insert(
                 name.clone(),
                 Remote {
@@ -632,6 +747,19 @@ fn remote_command(paths: &Paths, action: RemoteAction) -> Result<()> {
             }
             remotes.save(&file)?;
             println!("Added {name} ({url}).");
+            match Client::resolve(paths, Some(&name))?
+                .get::<Status>("/v1/status")
+                .await
+            {
+                Ok(status) => println!(
+                    "{} Connected: hedgehog {} with {} app{}.",
+                    green("✓"),
+                    status.version,
+                    status.apps,
+                    if status.apps == 1 { "" } else { "s" }
+                ),
+                Err(error) => println!("{} {error:#}", yellow("Couldn't connect yet:")),
+            }
             if !no_default {
                 println!("Commands now go to {name}. Use `--remote local` for this Mac.");
             }
@@ -817,6 +945,23 @@ mod tests {
         assert_eq!(env["B"], "x=y");
         assert_eq!(env["C"], "");
         assert!(parse_pairs(&["nope".into()]).is_err());
+    }
+
+    #[test]
+    fn normalizes_remote_urls() {
+        assert_eq!(
+            normalize_remote_url("abc123.opentunnel.xyz"),
+            "https://abc123.opentunnel.xyz"
+        );
+        assert_eq!(normalize_remote_url("mini:7700"), "http://mini:7700");
+        assert_eq!(
+            normalize_remote_url("https://abc123.opentunnel.xyz/"),
+            "https://abc123.opentunnel.xyz"
+        );
+        assert_eq!(
+            normalize_remote_url("http://100.1.2.3:7700"),
+            "http://100.1.2.3:7700"
+        );
     }
 
     #[test]

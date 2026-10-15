@@ -106,8 +106,13 @@ enum Command {
     Status,
     /// Check that everything hedgehog needs is installed.
     Doctor,
-    /// Print this Mac's API token and how to deploy to it from a laptop.
-    Token,
+    /// Print this Mac's API token and how to deploy to it from another machine.
+    Token {
+        /// Replace the token with a new one (if it leaked). The old one stops
+        /// working immediately.
+        #[arg(long)]
+        rotate: bool,
+    },
     /// Manage the hedgehog Macs this CLI can talk to.
     Remote {
         #[command(subcommand)]

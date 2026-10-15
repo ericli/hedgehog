@@ -52,7 +52,7 @@ hedgehog deploy
 
 ## Deploying from your laptop
 
-The hedgehog Mac's control API listens on its [Tailscale](https://tailscale.com) address, so you can deploy from anywhere on your tailnet.
+The CLI reaches the hedgehog Mac through the same tunnel as your apps, so it works from any network with nothing else to install.
 
 ```sh
 # on the hedgehog Mac
@@ -60,13 +60,49 @@ hedgehog token
 # prints a token and the exact command to run on your laptop, e.g.:
 
 # on your laptop
-hedgehog remote add home http://mac-mini.tail1234.ts.net:7700 --token <token>
+hedgehog remote add home https://k3x9m2q8a1bc.opentunnel.xyz --token <token>
 cd ~/code/budget && hedgehog deploy
 ```
+
+- **The token is the key to your Mac.** Anyone holding it can deploy code to it, so keep it out of repos and screenshots.
+- **Guessing is throttled.** Wrong tokens get slowed down after a handful of tries, and the right token always works.
+- **If it leaks:** `hedgehog token --rotate` issues a new one, run on the Mac or from a machine that already has it, and the old one stops working at once. The relay never sees the token, because TLS ends on your Mac.
+- **Tailscale is optional.** If it's running on the Mac, the API also listens on its Tailscale address, e.g. `hedgehog remote add home http://mac-mini:7700 --token <token>`.
 
 `hedgehog deploy` uploads the folder as it is on disk (uncommitted changes included), skipping anything `.gitignore`d plus `.git`, `node_modules`, and `.venv`. The new version starts next to the old one, and traffic switches over only once it answers HTTP. A broken build or a crashing app never takes down the running version.
 
 Folders that are git repos also redeploy on their own: `git pull` inside `~/Hedgehog/apps/<app>` and the new commit goes live a few seconds later.
+
+## Deploy on `git push` (GitHub Actions)
+
+The deploy API is plain HTTPS, so CI doesn't need the hedgehog binary. Add your hedgehog's home address and token as the repository secrets `HEDGEHOG_URL` and `HEDGEHOG_TOKEN`, then:
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to hedgehog
+        env:
+          HEDGEHOG_URL: ${{ secrets.HEDGEHOG_URL }}
+          HEDGEHOG_TOKEN: ${{ secrets.HEDGEHOG_TOKEN }}
+        run: |
+          set -o pipefail
+          git archive --format=tar.gz HEAD \
+            | curl -sS --fail-with-body -N -X POST \
+                -H "Authorization: Bearer $HEDGEHOG_TOKEN" -H "Content-Type: application/gzip" \
+                --data-binary @- "$HEDGEHOG_URL/v1/apps/budget/deploy" \
+            | tee deploy.ndjson | grep -v '"type":"log"'
+          tail -n 1 deploy.ndjson | grep -q '"type":"done"'
+```
+
+`git archive` sends exactly the committed files, so nothing gitignored is uploaded. The job fails if the deploy does. Its log shows the deploy steps; the full build output is in `hedgehog logs budget --build`.
 
 ## Who can open your apps
 
@@ -160,7 +196,8 @@ hedgehog db up|down [--port N]    dev Postgres on localhost (no daemon needed)
 hedgehog db init|url|reset        a project's dev database and its DATABASE_URL in .env
 hedgehog db psql <app> | --dev    psql into a deployed app's database, or the dev one
 hedgehog status / doctor
-hedgehog token / remote add|ls|use|rm
+hedgehog token [--rotate]         the API token, and how to add this Mac as a remote
+hedgehog remote add|ls|use|rm
 hedgehog daemon run|install|uninstall|logs
 ```
 
@@ -173,12 +210,12 @@ hedgehog runs as a per-user LaunchAgent, because Docker Desktop and OrbStack run
 - System Settings → Users & Groups → **automatically log in** as your user. This requires turning FileVault off; with FileVault on, the Mac waits at the login screen after a reboot.
 - System Settings → Energy → **start up automatically after a power failure** and **prevent automatic sleeping**. From a terminal: `sudo pmset -a sleep 0 autorestart 1`.
 - Set Docker Desktop or OrbStack to **start at login**.
-- Keep Tailscale running, so `hedgehog deploy` works from your laptop.
 
 ## Good to know
 
 - **Tunnel hostnames.** Each hedgehog gets one random OpenTunnel hostname (`<id>.opentunnel.xyz`). It stays the same as long as `~/Library/Application Support/hedgehog/opentunnel` exists. Custom domains aren't supported by OpenTunnel. OpenTunnel closes connections that are idle for 15 minutes, so long-lived WebSockets should send keepalives.
 - **Docker credentials.** Background services can't answer macOS keychain prompts, so hedgehog's `docker` commands use a copy of your Docker config without the credential helper. Public base images work as usual. If you build from private registries, set `HEDGEHOG_DOCKER_CREDENTIALS=1` in the daemon's environment.
+- **Adding or removing an app briefly reconnects the tunnel.** OpenTunnel only learns its list of routes when it connects, so connections that are open at that moment drop and browsers retry. To avoid cutting off its own deploy, a new app's URL goes live a few seconds after its first deploy finishes. Redeploys don't change routes, so they don't cause a reconnect. If the CLI's progress stream drops for any reason, it keeps waiting for the deploy to finish.
 - **HTTP only.** hedgehog proxies HTTP(S) and WebSockets. It doesn't handle raw TCP.
 
 ## Development

@@ -59,6 +59,8 @@ pub struct Client {
     http: reqwest::Client,
     /// Talking to the daemon on this machine (enables `db`, `token`, ...).
     pub local: bool,
+    /// The saved remote's name, when talking to one.
+    pub remote: Option<String>,
     /// What to call this daemon in messages.
     pub label: String,
 }
@@ -81,6 +83,7 @@ impl Client {
                 token: entry.token.clone(),
                 http,
                 local: false,
+                remote: Some(name.clone()),
                 label: name,
             });
         }
@@ -97,6 +100,7 @@ impl Client {
             token,
             http,
             local: true,
+            remote: None,
             label: "this Mac".to_string(),
         })
     }

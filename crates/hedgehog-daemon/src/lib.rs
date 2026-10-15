@@ -3,6 +3,7 @@
 //! behind a gateway that only lets your paired devices in.
 
 pub mod api;
+pub mod auth;
 pub mod build;
 pub mod deploy;
 pub mod docker;
@@ -33,6 +34,10 @@ use crate::tunnel::TunnelManager;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// How long a route change waits, so the response to the request that caused
+/// it gets back through the tunnel first.
+const ROUTE_SYNC_DELAY: Duration = Duration::from_secs(3);
+
 pub struct Options {
     /// Publish apps through OpenTunnel. Off keeps everything on `127.0.0.1`.
     pub tunnel: bool,
@@ -48,7 +53,7 @@ pub struct Daemon {
     pub postgres: Postgres,
     pub gateway: Gateway,
     pub tunnel: TunnelManager,
-    pub token: String,
+    pub token: auth::ApiToken,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -67,40 +72,37 @@ impl Daemon {
         self.lock(app).try_lock().is_err()
     }
 
-    /// Pushes the gateway's current listeners to the tunnel.
+    /// Publishes the gateway's listeners as tunnel routes.
+    ///
+    /// Adding or removing a route makes OpenTunnel reconnect, which drops every
+    /// open tunnel connection, including one a deploy is streaming its output
+    /// over. So an app that isn't published yet stays unpublished while its
+    /// deploy runs; [`Daemon::sync_routes_soon`] publishes it afterwards.
     pub fn sync_routes(&self) {
-        let routes = tunnel::routes(self.gateway.home_port(), &self.gateway.app_ports());
-        self.tunnel.set_routes(routes);
+        let published = self.tunnel.published();
+        let ports = self
+            .gateway
+            .app_ports()
+            .into_iter()
+            .filter(|(app, _)| published.contains(app) || !self.is_busy(app))
+            .collect();
+        self.tunnel
+            .set_routes(tunnel::routes(self.gateway.home_port(), &ports));
+    }
+
+    /// Syncs routes a moment from now, after the current response is out.
+    pub fn sync_routes_soon(self: &Arc<Self>) {
+        let daemon = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(ROUTE_SYNC_DELAY).await;
+            daemon.sync_routes();
+        });
     }
 }
 
 /// Reads the API token, creating it (mode 0600) the first time.
 pub fn load_or_create_token(paths: &Paths) -> Result<String> {
-    let path = paths.token();
-    if let Ok(token) = std::fs::read_to_string(&path) {
-        let token = token.trim().to_string();
-        if !token.is_empty() {
-            return Ok(token);
-        }
-    }
-    std::fs::create_dir_all(&paths.state)?;
-    let token = secrets::random_token(32);
-    write_private(&path, &token)?;
-    Ok(token)
-}
-
-fn write_private(path: &std::path::Path, contents: &str) -> Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("could not write {}", path.display()))?;
-    file.write_all(contents.as_bytes())?;
-    Ok(())
+    auth::load_or_create(&paths.token())
 }
 
 async fn connect_docker() -> Docker {
@@ -125,7 +127,7 @@ pub async fn run(paths: Paths, options: Options) -> Result<()> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("could not create {}", dir.display()))?;
     }
-    let token = load_or_create_token(&paths)?;
+    let token = auth::ApiToken::load(&paths.token())?;
     let store = Arc::new(Store::open(&paths.database())?);
     let mut docker = connect_docker().await;
     docker.set_cli_config(docker::prepare_cli_config(&paths.state.join("docker"))?);
@@ -141,9 +143,10 @@ pub async fn run(paths: Paths, options: Options) -> Result<()> {
         token,
         locks: Mutex::default(),
     });
-    daemon
-        .gateway
-        .set_api(api::dashboard_router(daemon.clone()));
+    daemon.gateway.set_api(
+        api::dashboard_router(daemon.clone()),
+        api::router(daemon.clone()),
+    );
     info!(apps = %daemon.paths.apps.display(), "hedgehog {VERSION} starting");
 
     // Bring apps back (listeners, containers) before the tunnel announces them.
