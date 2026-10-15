@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use hedgehog_core::api::{
-    AppInfo, AppStatus, CreateApp, DeployEvent, DeviceInfo, EnvUpdate, PairRequest, PairResponse,
-    PublicUpdate, Status, WebhookInfo,
+    AppInfo, AppStatus, BackupReport, BackupRequest, CreateApp, DeployEvent, DeviceInfo, EnvUpdate,
+    PairRequest, PairResponse, PublicUpdate, Status, WebhookInfo,
 };
 use hedgehog_core::env::{EnvMap, read_dotenv_file};
 use hedgehog_core::names::{app_name_from_dir, is_valid_app_name, repo_name_from_git_url};
@@ -102,6 +102,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Devices { action } => devices(&client()?, action).await,
         Command::Db { action } => crate::db::run(&paths, remote, action).await,
         Command::Status => status(&client()?).await,
+        Command::Backup { to } => backup(&client()?, to).await,
         Command::Doctor => doctor(&paths, remote).await,
         Command::Token { rotate } => token(&paths, remote, rotate).await,
         Command::Remote { action } => remote_command(&paths, action).await,
@@ -674,6 +675,86 @@ fn print_status(client: &Client, status: &Status) {
         println!("  home      {url}");
     }
     println!("  apps      {} in {}", status.apps, status.apps_dir);
+    let last = status
+        .last_backup
+        .map(|at| format!("last {}", ago(at)))
+        .unwrap_or_else(|| "none yet".to_string());
+    let copied = status
+        .backup_destination
+        .as_deref()
+        .map(|folder| format!(", copied to {folder}"))
+        .unwrap_or_else(|| ", on this Mac only".to_string());
+    println!("  backups   {last}{copied}");
+    if let Some(error) = &status.backup_error {
+        println!("            {}", red(error));
+    }
+}
+
+/// "5m ago" and friends, for Unix seconds.
+fn ago(seconds: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(seconds);
+    match (now - seconds).max(0) {
+        0..60 => "just now".to_string(),
+        diff @ 60..3600 => format!("{}m ago", diff / 60),
+        diff @ 3600..86400 => format!("{}h ago", diff / 3600),
+        diff => format!("{}d ago", diff / 86400),
+    }
+}
+
+async fn backup(client: &Client, to: Option<String>) -> Result<()> {
+    let request = match to.as_deref() {
+        Some("off") => BackupRequest {
+            destination: None,
+            clear_destination: true,
+        },
+        destination => BackupRequest {
+            destination: destination.map(str::to_string),
+            clear_destination: false,
+        },
+    };
+    println!("Backing up every app on {}…", client.label);
+    let report: BackupReport = client
+        .send(Method::POST, "/v1/backup", &request)
+        .await?
+        .json()
+        .await?;
+    println!(
+        "{} {} file{} written",
+        green("✓"),
+        report.files.len(),
+        if report.files.len() == 1 { "" } else { "s" }
+    );
+    match &report.destination {
+        Some(folder) => println!("  and copied to {folder}"),
+        None => println!(
+            "{}",
+            dim(
+                "  These stay on this Mac. `hedgehog backup --to /Volumes/Disk/hedgehog` also copies them to a second place."
+            )
+        ),
+    }
+    if !report.errors.is_empty() {
+        for error in &report.errors {
+            eprintln!("{} {error}", red("✗"));
+        }
+        if report
+            .errors
+            .iter()
+            .any(|error| error.contains("not permitted"))
+        {
+            eprintln!(
+                "{}",
+                dim(
+                    "macOS blocked access. Allow it in System Settings → Privacy & Security → Full Disk Access by adding the hedgehog binary."
+                )
+            );
+        }
+        return Err(Reported.into());
+    }
+    Ok(())
 }
 
 fn command_works(program: &str, args: &[&str]) -> bool {

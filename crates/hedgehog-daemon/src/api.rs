@@ -17,8 +17,8 @@ use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use futures_util::StreamExt;
 use hedgehog_core::api::{
-    AppInfo, CreateApp, DeployEvent, EnvUpdate, ErrorBody, PairRequest, PairResponse, PublicUpdate,
-    Status, WebhookInfo,
+    AppInfo, BackupReport, BackupRequest, CreateApp, DeployEvent, EnvUpdate, ErrorBody,
+    PairRequest, PairResponse, PublicUpdate, Status, WebhookInfo,
 };
 use hedgehog_core::names::is_valid_app_name;
 use hedgehog_core::{API_PORT, Manifest};
@@ -103,6 +103,7 @@ fn routes(daemon: AppState) -> Router<()> {
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", delete(revoke_device))
         .route("/v1/token/rotate", post(rotate_token))
+        .route("/v1/backup", post(run_backup))
         .with_state(daemon)
 }
 
@@ -207,6 +208,13 @@ async fn status(State(daemon): State<AppState>) -> ApiResult<Json<Status>> {
         docker: daemon.docker.ping().await,
         railpack: build::railpack_installed().await,
         apps_dir: daemon.paths.apps.display().to_string(),
+        last_backup: daemon
+            .store
+            .setting(crate::backup::LAST)?
+            .and_then(|value| value.parse().ok()),
+        backup_destination: crate::backup::destination(&daemon.store)
+            .map(|path| path.display().to_string()),
+        backup_error: crate::backup::last_error(&daemon.store),
     }))
 }
 
@@ -547,6 +555,21 @@ fn qr_svg(text: &str) -> Option<String> {
             .quiet_zone(true)
             .build(),
     )
+}
+
+/// Backs everything up now, optionally changing where backups are copied.
+async fn run_backup(
+    State(daemon): State<AppState>,
+    Json(request): Json<BackupRequest>,
+) -> ApiResult<Json<BackupReport>> {
+    if request.clear_destination {
+        crate::backup::set_destination(&daemon.store, None)?;
+    }
+    if let Some(folder) = request.destination.as_deref().map(str::trim) {
+        crate::backup::set_destination(&daemon.store, Some(folder))
+            .map_err(|error| bad_request(format!("{error:#}")))?;
+    }
+    Ok(Json(daemon.run_backup().await))
 }
 
 /// Issues a new API token; the old one stops working right away.

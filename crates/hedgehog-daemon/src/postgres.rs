@@ -5,7 +5,6 @@
 //! deployed apps (reachable only on the hedgehog Docker network), and a dev
 //! one (`hedgehog db up`) published on `localhost` for working on apps.
 
-use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -22,7 +21,6 @@ pub const CONTAINER: &str = "hedgehog-postgres";
 pub const DEV_CONTAINER: &str = "hedgehog-dev-postgres";
 pub const DEFAULT_DEV_PORT: u16 = 5432;
 pub const IMAGE: &str = "postgres:17-alpine";
-const BACKUPS_KEPT: usize = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flavor {
@@ -154,6 +152,7 @@ impl Postgres {
         let mut host_config = HostConfig {
             binds: Some(vec![format!("{volume}:/var/lib/postgresql/data")]),
             restart_policy,
+            log_config: Some(crate::docker::log_config()),
             ..Default::default()
         };
         let mut exposed_ports = None;
@@ -284,59 +283,39 @@ impl Postgres {
         Ok(())
     }
 
-    /// Dumps every app database to `<backups>/<app>/<timestamp>.dump`,
-    /// keeping the newest few.
-    pub async fn backup(&self, apps: &[String], backups: &Path) -> Result<()> {
+    /// The app's database as a `pg_dump` custom-format archive, or `None` if
+    /// Postgres isn't running or the app has no database.
+    pub async fn dump(&self, app: &str) -> Result<Option<Vec<u8>>> {
         if !self.is_running().await? {
-            return Ok(());
+            return Ok(None);
         }
-        let stamp = crate::secrets::now();
-        for app in apps {
-            let exists = self
-                .docker
-                .exec(
-                    self.container(),
-                    &[
-                        "psql",
-                        "-U",
-                        "postgres",
-                        "-tAc",
-                        &format!("SELECT 1 FROM pg_database WHERE datname = '{app}'"),
-                    ],
-                    b"",
-                )
-                .await?;
-            if String::from_utf8_lossy(&exists).trim() != "1" {
-                continue;
-            }
-            let dump = self
-                .docker
-                .exec(
-                    self.container(),
-                    &["pg_dump", "-U", "postgres", "-Fc", app],
-                    b"",
-                )
-                .await?;
-            let dir = backups.join(app);
-            std::fs::create_dir_all(&dir)?;
-            std::fs::write(dir.join(format!("{stamp}.dump")), dump)?;
-            prune_backups(&dir)?;
+        let exists = self
+            .docker
+            .exec(
+                self.container(),
+                &[
+                    "psql",
+                    "-U",
+                    "postgres",
+                    "-tAc",
+                    &format!("SELECT 1 FROM pg_database WHERE datname = '{app}'"),
+                ],
+                b"",
+            )
+            .await?;
+        if String::from_utf8_lossy(&exists).trim() != "1" {
+            return Ok(None);
         }
-        Ok(())
+        let dump = self
+            .docker
+            .exec(
+                self.container(),
+                &["pg_dump", "-U", "postgres", "-Fc", app],
+                b"",
+            )
+            .await?;
+        Ok(Some(dump))
     }
-}
-
-fn prune_backups(dir: &Path) -> Result<()> {
-    let mut dumps: Vec<_> = std::fs::read_dir(dir)?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "dump"))
-        .collect();
-    dumps.sort();
-    let excess = dumps.len().saturating_sub(BACKUPS_KEPT);
-    for old in dumps.into_iter().take(excess) {
-        std::fs::remove_file(old)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -353,21 +332,5 @@ mod tests {
             dev_database_url("my-app", "pw", 5433),
             "postgres://my-app:pw@localhost:5433/my-app"
         );
-    }
-
-    #[test]
-    fn prunes_old_backups() {
-        let dir = tempfile::tempdir().unwrap();
-        for stamp in 100..110 {
-            std::fs::write(dir.path().join(format!("{stamp}.dump")), "x").unwrap();
-        }
-        prune_backups(dir.path()).unwrap();
-        let mut left: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        left.sort();
-        assert_eq!(left.len(), BACKUPS_KEPT);
-        assert_eq!(left[0], "103.dump");
     }
 }

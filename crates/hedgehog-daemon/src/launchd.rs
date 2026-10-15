@@ -61,17 +61,33 @@ pub fn service_path(current: Option<&str>) -> String {
     dirs.join(":")
 }
 
-pub fn render_plist(exe: &Path, log: &Path, path_env: &str, hedgehog_home: Option<&str>) -> String {
-    let mut env = format!(
-        "    <key>PATH</key>\n    <string>{}</string>\n",
-        xml_escape(path_env)
-    );
-    if let Some(home) = hedgehog_home {
-        env.push_str(&format!(
-            "    <key>HEDGEHOG_HOME</key>\n    <string>{}</string>\n",
-            xml_escape(home)
-        ));
-    }
+/// The daemon's environment: PATH, plus every `HEDGEHOG_*` setting from the
+/// shell that ran `hedgehog daemon install` (e.g. `HEDGEHOG_MAX_BUILDS=1`).
+pub fn service_env(
+    path_env: String,
+    vars: impl IntoIterator<Item = (String, String)>,
+) -> Vec<(String, String)> {
+    let mut env = vec![("PATH".to_string(), path_env)];
+    let mut settings: Vec<(String, String)> = vars
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("HEDGEHOG_") && key != "HEDGEHOG_REMOTE")
+        .collect();
+    settings.sort();
+    env.extend(settings);
+    env
+}
+
+pub fn render_plist(exe: &Path, log: &Path, vars: &[(String, String)]) -> String {
+    let env: String = vars
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "    <key>{}</key>\n    <string>{}</string>\n",
+                xml_escape(key),
+                xml_escape(value)
+            )
+        })
+        .collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -113,17 +129,11 @@ pub fn install(paths: &Paths, exe: &Path) -> Result<PathBuf> {
     let plist = plist_path()?;
     std::fs::create_dir_all(plist.parent().unwrap())?;
     std::fs::create_dir_all(&paths.state)?;
-    let path_env = service_path(std::env::var("PATH").ok().as_deref());
-    let hedgehog_home = std::env::var("HEDGEHOG_HOME").ok();
-    std::fs::write(
-        &plist,
-        render_plist(
-            exe,
-            &paths.daemon_log(),
-            &path_env,
-            hedgehog_home.as_deref(),
-        ),
-    )?;
+    let env = service_env(
+        service_path(std::env::var("PATH").ok().as_deref()),
+        std::env::vars(),
+    );
+    std::fs::write(&plist, render_plist(exe, &paths.daemon_log(), &env))?;
     let _ = Command::new("launchctl")
         .args(["bootout", &domain_target()?])
         .output();
@@ -169,16 +179,31 @@ mod tests {
 
     #[test]
     fn renders_plist() {
+        let env = service_env(
+            "/usr/bin:/bin".to_string(),
+            [
+                ("HOME".to_string(), "/Users/me".to_string()),
+                ("HEDGEHOG_MAX_BUILDS".to_string(), "1".to_string()),
+                ("HEDGEHOG_REMOTE".to_string(), "home".to_string()),
+                ("HEDGEHOG_DOCKER_CREDENTIALS".to_string(), "1".to_string()),
+            ],
+        );
         let plist = render_plist(
             Path::new("/Users/me/.cargo/bin/hedgehog"),
             Path::new("/tmp/hedgehog.log"),
-            "/usr/bin:/bin",
-            None,
+            &env,
         );
         assert!(plist.contains("<string>dev.hedgehog.daemon</string>"));
         assert!(plist.contains("<string>/Users/me/.cargo/bin/hedgehog</string>"));
         assert!(plist.contains("<string>daemon</string>"));
-        assert!(!plist.contains("HEDGEHOG_HOME"));
+        assert!(plist.contains("<key>PATH</key>"));
+        assert!(plist.contains("<key>HEDGEHOG_MAX_BUILDS</key>\n    <string>1</string>"));
+        assert!(plist.contains("<key>HEDGEHOG_DOCKER_CREDENTIALS</key>"));
+        assert!(!plist.contains("HEDGEHOG_REMOTE"), "a CLI-only setting");
+        assert!(
+            !plist.contains("<key>HOME</key>"),
+            "only hedgehog settings pass through"
+        );
     }
 
     #[test]

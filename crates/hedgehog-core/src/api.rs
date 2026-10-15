@@ -14,6 +14,15 @@ pub struct Status {
     pub docker: bool,
     pub railpack: bool,
     pub apps_dir: String,
+    /// Unix seconds of the last nightly or manual backup.
+    #[serde(default)]
+    pub last_backup: Option<i64>,
+    /// Where backups are also copied, if anywhere.
+    #[serde(default)]
+    pub backup_destination: Option<String>,
+    /// What went wrong in the last backup, if anything.
+    #[serde(default)]
+    pub backup_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +154,26 @@ pub struct WebhookInfo {
     pub secret: String,
     /// Pushes to this branch deploy; others are ignored.
     pub branch: Option<String>,
+}
+
+/// Run a backup now, optionally changing where backups are also copied.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BackupRequest {
+    /// Also copy backups here from now on (an absolute folder path).
+    #[serde(default)]
+    pub destination: Option<String>,
+    /// Stop copying backups anywhere else.
+    #[serde(default)]
+    pub clear_destination: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BackupReport {
+    /// Files written on this Mac.
+    pub files: Vec<String>,
+    /// Where they were also copied, if anywhere.
+    pub destination: Option<String>,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

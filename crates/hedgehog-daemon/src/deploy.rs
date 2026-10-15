@@ -227,6 +227,13 @@ impl Daemon {
             let _ = writeln!(log_file.lock().unwrap(), "{line}");
             let _ = log_events.send(DeployEvent::Log { line });
         };
+        let _build_slot = match self.builds.try_acquire() {
+            Ok(slot) => slot,
+            Err(_) => {
+                step(events, "waiting for another build to finish");
+                self.builds.acquire().await?
+            }
+        };
         let work_dir = self.paths.state.join("build").join(&deploy_id);
         let built = build::build(&self.docker, &dir, &manifest, &image, &work_dir, &log).await;
         let _ = std::fs::remove_dir_all(&work_dir);

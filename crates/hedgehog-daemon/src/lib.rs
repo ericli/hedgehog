@@ -4,6 +4,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod backup;
 pub mod build;
 pub mod deploy;
 pub mod docker;
@@ -62,6 +63,9 @@ pub struct Daemon {
     /// The last commit each app tried to deploy, whoever started it, so the
     /// folder scanner doesn't rebuild a commit that just failed.
     pub(crate) attempted_revisions: Mutex<HashMap<String, String>>,
+    /// Image builds are heavy, so only a few run at once
+    /// (`HEDGEHOG_MAX_BUILDS`, default 2); the rest wait their turn.
+    pub(crate) builds: tokio::sync::Semaphore,
 }
 
 impl Daemon {
@@ -105,6 +109,35 @@ impl Daemon {
             daemon.sync_routes();
         });
     }
+}
+
+/// A number from the environment, or `default`.
+pub(crate) fn env_number(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+/// launchd appends the daemon's output to `daemon.log` forever. Once it
+/// passes `max` bytes, keep one older copy (`daemon.log.1`) and start the
+/// log afresh. launchd opens the file for appending, so it carries on
+/// writing at the new end.
+pub fn rotate_log(path: &std::path::Path, max: u64) -> std::io::Result<bool> {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return Ok(false);
+    };
+    if metadata.len() <= max {
+        return Ok(false);
+    }
+    let mut old = path.as_os_str().to_owned();
+    old.push(".1");
+    std::fs::copy(path, &old)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .set_len(0)?;
+    Ok(true)
 }
 
 /// Reads the API token, creating it (mode 0600) the first time.
@@ -153,6 +186,7 @@ pub async fn run(paths: Paths, options: Options) -> Result<()> {
         locks: Mutex::default(),
         pending_pulls: Mutex::default(),
         attempted_revisions: Mutex::default(),
+        builds: tokio::sync::Semaphore::new(env_number("HEDGEHOG_MAX_BUILDS", 2).max(1) as usize),
     });
     daemon.gateway.set_api(
         api::dashboard_router(daemon.clone()),

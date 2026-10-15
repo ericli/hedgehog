@@ -128,6 +128,14 @@ enum Command {
         #[command(subcommand)]
         action: DbAction,
     },
+    /// Back up every app's database and data folder now. Backups also run
+    /// nightly on their own.
+    Backup {
+        /// Also copy backups to this folder on the hedgehog Mac from now on,
+        /// e.g. an external disk or iCloud Drive. `off` stops copying.
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Show the daemon, Docker, and tunnel status.
     Status,
     /// Check that everything hedgehog needs is installed.
@@ -236,7 +244,12 @@ enum DaemonAction {
     /// Run the daemon in the foreground.
     Run {
         /// Keep apps on 127.0.0.1 instead of publishing them with OpenTunnel.
-        #[arg(long, env = "HEDGEHOG_NO_TUNNEL")]
+        #[arg(
+            long,
+            env = "HEDGEHOG_NO_TUNNEL",
+            action = clap::ArgAction::SetTrue,
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
         no_tunnel: bool,
         /// Extra control API addresses (default: this Mac's Tailscale IP).
         #[arg(long)]
@@ -274,6 +287,34 @@ fn main() -> ExitCode {
                 eprintln!("{} {error:#}", style::red("error:"));
             }
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_tunnel(value: &str) -> bool {
+        // SAFETY: test-only; nothing else in this test reads the environment concurrently.
+        unsafe { std::env::set_var("HEDGEHOG_NO_TUNNEL", value) };
+        let cli = Cli::try_parse_from(["hedgehog", "daemon", "run"]).unwrap();
+        unsafe { std::env::remove_var("HEDGEHOG_NO_TUNNEL") };
+        match cli.command {
+            Command::Daemon {
+                action: DaemonAction::Run { no_tunnel, .. },
+            } => no_tunnel,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn no_tunnel_env_accepts_everyday_values() {
+        for yes in ["1", "true", "yes", "on"] {
+            assert!(no_tunnel(yes), "{yes}");
+        }
+        for no in ["0", "false", "no", "off"] {
+            assert!(!no_tunnel(no), "{no}");
         }
     }
 }

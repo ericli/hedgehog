@@ -7,8 +7,8 @@ use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use bollard::models::{
-    ContainerCreateBody, HostConfig, NetworkCreateRequest, PortBinding, RestartPolicy,
-    RestartPolicyNameEnum,
+    ContainerCreateBody, HostConfig, HostConfigLogConfig, NetworkCreateRequest, PortBinding,
+    RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectNetworkOptions,
@@ -43,6 +43,18 @@ pub enum ContainerState {
     Stopped {
         exit_code: Option<i64>,
     },
+}
+
+/// Container output is capped (Docker's default keeps it forever): up to
+/// three 10 MB files per container.
+pub fn log_config() -> HostConfigLogConfig {
+    HostConfigLogConfig {
+        typ: Some("json-file".to_string()),
+        config: Some(HashMap::from([
+            ("max-size".to_string(), "10m".to_string()),
+            ("max-file".to_string(), "3".to_string()),
+        ])),
+    }
 }
 
 /// Everything needed to start one app container.
@@ -235,6 +247,7 @@ impl Docker {
                 }),
                 network_mode: Some(NETWORK.to_string()),
                 init: Some(true),
+                log_config: Some(log_config()),
                 ..Default::default()
             }),
             ..Default::default()

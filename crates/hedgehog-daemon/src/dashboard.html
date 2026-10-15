@@ -509,6 +509,8 @@ function renderFooter() {
   if (!status) return;
   const parts = [`hedgehog ${status.version}`, status.docker ? "Docker ok" : "Docker isn't running"];
   if (!status.railpack) parts.push("Railpack missing");
+  parts.push(status.last_backup ? `backed up ${ago(status.last_backup)}` : "no backups yet");
+  if (status.backup_error) parts.push("last backup had problems (see hedgehog status)");
   $("footer").textContent = parts.join(" · ");
 }
 

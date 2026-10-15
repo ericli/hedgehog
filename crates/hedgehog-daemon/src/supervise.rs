@@ -41,6 +41,10 @@ pub async fn run(daemon: Arc<Daemon>) {
             last_reconcile = Instant::now();
         }
         maybe_backup(&daemon);
+        let max = crate::env_number("HEDGEHOG_LOG_MAX_BYTES", 10 * 1024 * 1024);
+        if let Ok(true) = crate::rotate_log(&daemon.paths.daemon_log(), max) {
+            info!("rotated the daemon log");
+        }
     }
 }
 
@@ -284,7 +288,7 @@ async fn reconcile_app(daemon: &Arc<Daemon>, app: &AppRecord, boot: bool) -> Res
 fn maybe_backup(daemon: &Arc<Daemon>) {
     let last: i64 = daemon
         .store
-        .setting("backup.last")
+        .setting(crate::backup::LAST)
         .ok()
         .flatten()
         .and_then(|value| value.parse().ok())
@@ -292,26 +296,35 @@ fn maybe_backup(daemon: &Arc<Daemon>) {
     if now() - last < BACKUP_EVERY {
         return;
     }
-    let _ = daemon.store.set_setting("backup.last", &now().to_string());
+    // Recorded up front so a slow backup isn't started twice.
+    let _ = daemon
+        .store
+        .set_setting(crate::backup::LAST, &now().to_string());
     let daemon = daemon.clone();
     tokio::spawn(async move {
-        let apps: Vec<String> = match daemon.store.apps() {
-            Ok(apps) => apps.into_iter().map(|app| app.name).collect(),
-            Err(_) => return,
-        };
-        match daemon.postgres.backup(&apps, &daemon.paths.backups()).await {
-            Ok(()) => info!(
-                "database backups written to {}",
-                daemon.paths.backups().display()
-            ),
-            Err(error) => warn!("database backup failed: {error:#}"),
-        }
+        daemon.run_backup().await;
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotates_big_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("daemon.log");
+        assert!(!crate::rotate_log(&log, 10).unwrap(), "missing log");
+        std::fs::write(&log, "short").unwrap();
+        assert!(!crate::rotate_log(&log, 10).unwrap());
+        std::fs::write(&log, "a line that is long enough").unwrap();
+        assert!(crate::rotate_log(&log, 10).unwrap());
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("daemon.log.1")).unwrap(),
+            "a line that is long enough"
+        );
+    }
 
     #[test]
     fn lists_visible_folders_only() {

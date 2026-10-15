@@ -169,7 +169,21 @@ The dashboard uses the same control API as the CLI, but logs in with your device
 
 Env is layered, last wins: the app folder's `.env` → the variables above → `[env]` in `hedgehog.toml` → `hedgehog env <app> set`. Changing variables restarts the app.
 
-Databases are dumped nightly to `~/Library/Application Support/hedgehog/backups/<app>/`, keeping the last 7.
+### Backups
+
+Every night, hedgehog backs up each app's database (a `pg_dump`) and its `/data` folder (a `.tar.gz`) to `~/Library/Application Support/hedgehog/backups/<app>/`, keeping the last 7 of each.
+
+- **Copy them somewhere else.** A dead SSD would take the Mac's own copy with it, so point hedgehog at a second place, such as an external disk or iCloud Drive. Every backup is then copied there too:
+
+  ```sh
+  hedgehog backup --to /Volumes/Backup/hedgehog
+  hedgehog backup --to ~/Library/Mobile\ Documents/com~apple~CloudDocs/hedgehog
+  ```
+
+- **Run one now:** `hedgehog backup`. `hedgehog backup --to off` stops copying.
+- **Check on them:** `hedgehog status` shows when the last backup ran and whether anything went wrong.
+- **If macOS blocks access:** it may refuse a background service access to external disks or iCloud Drive. If backups report "not permitted", add the hedgehog binary under System Settings → Privacy & Security → Full Disk Access.
+- **SQLite in `/data`:** `/data` is copied while the app runs. For an app that keeps SQLite there, a copy can catch a write halfway.
 
 ## A dev database on your laptop
 
@@ -226,6 +240,7 @@ hedgehog devices [revoke <id>]
 hedgehog db up|down [--port N]    dev Postgres on localhost (no daemon needed)
 hedgehog db init|url|reset        a project's dev database and its DATABASE_URL in .env
 hedgehog db psql <app> | --dev    psql into a deployed app's database, or the dev one
+hedgehog backup [--to <dir>|off]  back up databases and data folders now (and set a second copy)
 hedgehog status / doctor
 hedgehog token [--rotate]         the API token, and how to add this Mac as a remote
 hedgehog remote add|ls|use|rm
@@ -245,7 +260,9 @@ hedgehog runs as a per-user LaunchAgent, because Docker Desktop and OrbStack run
 ## Good to know
 
 - **Tunnel hostnames.** Each hedgehog gets one random OpenTunnel hostname (`<id>.opentunnel.xyz`). It stays the same as long as `~/Library/Application Support/hedgehog/opentunnel` exists. Custom domains aren't supported by OpenTunnel. OpenTunnel closes connections that are idle for 15 minutes, so long-lived WebSockets should send keepalives.
-- **Docker credentials.** Background services can't answer macOS keychain prompts, so hedgehog's `docker` commands use a copy of your Docker config without the credential helper. Public base images work as usual. If you build from private registries, set `HEDGEHOG_DOCKER_CREDENTIALS=1` in the daemon's environment.
+- **Docker credentials.** Background services can't answer macOS keychain prompts, so hedgehog's `docker` commands use a copy of your Docker config without the credential helper. Public base images work as usual. If you build from private registries, install the daemon with `HEDGEHOG_DOCKER_CREDENTIALS=1 hedgehog daemon install`. Any `HEDGEHOG_*` setting in that shell is passed to the daemon.
+- **Disk use stays bounded.** Each app's output is capped at three 10 MB files. The daemon's log rotates at 10 MB (`HEDGEHOG_LOG_MAX_BYTES`), keeping one old copy. Each app keeps its current image and one previous one.
+- **Builds take turns.** At most 2 images build at once (`HEDGEHOG_MAX_BUILDS`), so a reboot or a burst of pushes doesn't swamp the Mac. The rest show "waiting for another build to finish".
 - **Adding or removing an app briefly reconnects the tunnel.** OpenTunnel only learns its list of routes when it connects, so connections that are open at that moment drop and browsers retry. To avoid cutting off its own deploy, a new app's URL goes live a few seconds after its first deploy finishes. Redeploys don't change routes, so they don't cause a reconnect. If the CLI's progress stream drops for any reason, it keeps waiting for the deploy to finish.
 - **HTTP only.** hedgehog proxies HTTP(S) and WebSockets. It doesn't handle raw TCP.
 
