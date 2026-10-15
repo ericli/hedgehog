@@ -137,7 +137,11 @@ Your apps never see hedgehog's cookie, and they receive `X-Forwarded-Proto: http
 
 ## The dashboard
 
-On an admin device, `https://<id>.opentunnel.xyz` (the address `hedgehog status` shows as "home") is a dashboard for your hedgehog. It works on a phone. From it you can:
+On an admin device, `https://<id>.opentunnel.xyz` (the address `hedgehog status` shows as "home") is a dashboard for your hedgehog. It works on a phone.
+
+On a computer, `hedgehog dashboard` opens it already signed in. It uses a one-time admin link, works on the hedgehog Mac or from your laptop, and won't add a duplicate device for a browser that's already signed in. To give it its own window and Dock icon, use **File → Add to Dock** in Safari.
+
+From the dashboard you can:
 
 - see every app's status, URL, last deploy, and commit, and open it,
 - **create a new app from a Git URL**: hedgehog clones it on the Mac, builds it, and puts it live,
@@ -213,6 +217,7 @@ hedgehog restart|start|stop <app>
 hedgehog rm <app> [--purge]       folder goes to the Trash; --purge also drops data and database
 hedgehog open <app>
 hedgehog public <app> on|off
+hedgehog dashboard [--no-open]    open the dashboard in this computer's browser, signed in
 hedgehog pair [--admin]           pair a device (--admin: it can use the dashboard too)
 hedgehog devices [revoke <id>]
 hedgehog db up|down [--port N]    dev Postgres on localhost (no daemon needed)

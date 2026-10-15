@@ -100,6 +100,12 @@ enum Command {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    /// Open the dashboard in your browser, signed in as an admin.
+    Dashboard {
+        /// Print a one-time sign-in link instead of opening it.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Pair a device (phone, laptop browser) so it can open your apps.
     Pair {
         /// A name to recognise the device by later.

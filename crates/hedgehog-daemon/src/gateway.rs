@@ -376,6 +376,19 @@ fn pair(inner: &Inner, request: &Request<Incoming>) -> Response<Body> {
         }
         _ => return html(StatusCode::FORBIDDEN, pages::pair_failed()),
     };
+    // A browser that is already paired with at least these rights just
+    // signs in, so opening `hedgehog dashboard` again doesn't pile up devices.
+    if inner
+        .device(request.headers())
+        .is_some_and(|device| device.admin || !grant.admin)
+    {
+        return Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header(header::LOCATION, "/")
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(empty())
+            .unwrap();
+    }
     let token = random_token(32);
     let id = random_token(4);
     let token_hash = hash_token(&token);
@@ -982,6 +995,54 @@ mod tests {
         let (status, _, body) = send(app_port, "/v1/status", None, &bearer).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.starts_with("cookie="), "app hosts never serve the API");
+    }
+
+    #[tokio::test]
+    async fn pairing_an_already_paired_browser_reuses_its_device() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let gateway = Gateway::start(store.clone()).await.unwrap();
+        let admin = pair_device(&gateway, &store, "first", true).await;
+        assert_eq!(store.devices().unwrap().len(), 1);
+
+        // Same browser, new admin link: no new device, no new cookie.
+        let grant = PairGrant {
+            label: None,
+            admin: true,
+        };
+        store
+            .add_pair_code(&hash_token("second"), &grant, crate::secrets::now() + 60)
+            .unwrap();
+        let (status, headers, _) = get(
+            gateway.home_port(),
+            &format!("{PAIR_PATH}?code=second"),
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert!(!headers.contains_key(header::SET_COOKIE));
+        assert_eq!(store.devices().unwrap().len(), 1);
+        assert_eq!(
+            store.take_pair_code(&hash_token("second")).unwrap(),
+            None,
+            "code is used up"
+        );
+
+        // A viewer upgrading to admin does get a new (admin) device.
+        let viewer = pair_device(&gateway, &store, "viewer", false).await;
+        store
+            .add_pair_code(&hash_token("upgrade"), &grant, crate::secrets::now() + 60)
+            .unwrap();
+        let (_, headers, _) = get(
+            gateway.home_port(),
+            &format!("{PAIR_PATH}?code=upgrade"),
+            Some(&viewer),
+        )
+        .await;
+        assert!(headers.contains_key(header::SET_COOKIE));
+        assert_eq!(
+            store.devices().unwrap().iter().filter(|d| d.admin).count(),
+            2
+        );
     }
 
     #[test]

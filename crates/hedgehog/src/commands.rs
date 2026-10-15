@@ -91,6 +91,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Pair { label, admin } => pair(&client()?, label, admin).await,
+        Command::Dashboard { no_open } => dashboard(&client()?, no_open).await,
         Command::Devices { action } => devices(&client()?, action).await,
         Command::Db { action } => crate::db::run(&paths, remote, action).await,
         Command::Status => status(&client()?).await,
@@ -502,6 +503,63 @@ async fn pair(client: &Client, label: Option<String>, admin: bool) -> Result<()>
         .json()
         .await?;
     show_pairing(&response, admin)
+}
+
+/// This computer's name, for labelling the browser it signs in.
+fn machine_name() -> String {
+    let run = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|name| !name.is_empty())
+    };
+    run("scutil", &["--get", "ComputerName"])
+        .or_else(|| run("hostname", &[]))
+        .unwrap_or_else(|| "this computer".to_string())
+}
+
+/// Signs this computer's browser in to the dashboard with a one-time admin
+/// link. A browser that's already signed in just opens it.
+async fn dashboard(client: &Client, no_open: bool) -> Result<()> {
+    let request = PairRequest {
+        label: Some(format!("{} (browser)", machine_name())),
+        admin: true,
+    };
+    let response: PairResponse = client
+        .send(Method::POST, "/v1/pair", &request)
+        .await?
+        .json()
+        .await?;
+    if no_open {
+        println!("{}\n", bold(&response.url));
+        println!(
+            "{}",
+            dim(&format!(
+                "Open it in the browser to sign in. It works once and expires in {} minutes.",
+                response.expires_in_secs / 60
+            ))
+        );
+        return Ok(());
+    }
+    let opened = std::process::Command::new("open")
+        .arg(&response.url)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !opened {
+        bail!(
+            "couldn't open a browser. Run `hedgehog dashboard --no-open` and open the link yourself"
+        );
+    }
+    let home = response.url.split("/_hedgehog").next().unwrap_or_default();
+    println!("Opened the dashboard at {home}");
+    println!(
+        "{}",
+        dim("Tip: in Safari, File → Add to Dock turns it into an app with its own window.")
+    );
+    Ok(())
 }
 
 fn show_pairing(response: &PairResponse, admin: bool) -> Result<()> {
