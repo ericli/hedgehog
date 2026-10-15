@@ -8,331 +8,355 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A6%94%3C/text%3E%3C/svg%3E">
 <title>hedgehog</title>
 <style>
+/* A quiet, Are.na-like system: white page, black type, hairlines, square
+   blocks. Private apps take the "private channel" red, public apps the
+   "public channel" green; orange means something failed. */
 :root {
-  --bg: #fbfaf7; --fg: #1d1b16; --muted: #6b665c; --card: #ffffff; --line: #e6e1d6;
-  --soft: #f3f0e8; --accent: #8a5a2b; --accent-fg: #ffffff;
-  --ok: #2f7d4f; --ok-bg: #e5f2ea; --bad: #b4372f; --bad-bg: #f8e4e1; --wait: #9a6200; --wait-bg: #f8eed9;
-  --radius: 12px; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --gray0: #FFF; --gray1: #F7F7F7; --gray2: #EDEDED; --gray3: #DEDEDE;
+  --gray4: #999; --gray5: #696969; --gray6: #333; --gray7: #000;
+  --red1: #FAF4F3; --red2: #DFBEBE; --red3: #B93D3D;
+  --green1: #F4F8F3; --green2: #B4D6B3; --green3: #238020;
+  --blue2: #3D46C2; --alert: #E15100;
+  --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --fs1: 0.78125rem; --fs2: 0.9rem; --fs3: 1rem; --fs4: 1.2rem; --fs5: 1.5rem; --fs7: 2rem;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #171512; --fg: #f1ece2; --muted: #a39d90; --card: #211e1a; --line: #37322b;
-    --soft: #1b1916; --accent: #d9a066; --accent-fg: #1d1b16;
-    --ok: #6cc28f; --ok-bg: #1f3328; --bad: #f0857c; --bad-bg: #3b2220; --wait: #e9b44c; --wait-bg: #3a2f17;
+    --gray0: #000; --gray1: #1A1A1A; --gray2: #333; --gray3: #4F4F4F;
+    --gray4: #696969; --gray5: #B2B2B2; --gray6: #E5E5E5; --gray7: #FFF;
+    --red1: #1A0404; --red2: #412020; --red3: #EB6864;
+    --green1: #121D12; --green2: #2A4C29; --green3: #98DC89;
+    --blue2: #5E6DEE; --alert: #FF7A30;
   }
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-a { color: inherit; }
-button, input, select { font: inherit; color: inherit; }
-main { max-width: 760px; margin: 0 auto; padding: 0 16px 48px; }
+body { margin: 0; background: var(--gray0); color: var(--gray7); font: var(--fs2)/1.45 var(--sans); }
+a { color: var(--gray6); }
+button, input { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--blue2); outline-offset: 2px; }
+.slate { color: var(--gray5); }
+.small { font-size: var(--fs1); }
+code { font-family: var(--mono); font-size: 0.9em; }
 
 /* Top bar */
-.top { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--line); }
-.top-inner { max-width: 760px; margin: 0 auto; padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
-.brand { font-weight: 650; font-size: 18px; margin-right: auto; }
-.tunnel { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
-.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.wait { background: var(--wait); }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 15px;
+  padding: 15px 20px; padding-top: max(15px, env(safe-area-inset-top)); }
+.wordmark { font-weight: bold; font-size: var(--fs3); }
+.online { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs1); color: var(--gray5); }
+.online::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--gray4); }
+.online.ok::before { background: var(--green3); }
+.online.bad::before { background: var(--alert); }
 
-/* Sections */
-section { margin-top: 28px; }
-.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-h2 { font-size: 15px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0; }
-.muted { color: var(--muted); }
-.small { font-size: 14px; }
-.empty { padding: 20px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--muted); }
-code { font-family: var(--mono); font-size: .9em; background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; }
+main { max-width: 1240px; margin: 0 auto; padding: 0 20px 80px; }
 
-/* App cards */
-.apps { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
-.app { display: block; width: 100%; min-width: 0; overflow: hidden; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 14px 16px; cursor: pointer; }
-.app:hover { border-color: var(--accent); }
-.app:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.name { font-weight: 600; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.url { font-size: 14px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
-.meta { font-size: 13px; color: var(--muted); margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
-.error-line { font-size: 13px; color: var(--bad); margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
-  background: var(--soft); color: var(--muted); white-space: nowrap; flex: none; }
-.pill.running { background: var(--ok-bg); color: var(--ok); }
-.pill.failed { background: var(--bad-bg); color: var(--bad); }
-.pill.building, .pill.new { background: var(--wait-bg); color: var(--wait); }
-.pill.building::before, .pill.new::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1s infinite alternate; }
-@keyframes pulse { from { opacity: .25; } to { opacity: 1; } }
-.chip { font-size: 12px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
-.chip.accent { border-color: var(--accent); color: var(--accent); }
-.spacer { margin-left: auto; }
+/* Channel-style header */
+.channel { text-align: center; padding: 45px 0 35px; }
+.channel h1 { margin: 0; font-size: var(--fs7); font-weight: normal; letter-spacing: -0.01em; }
+.channel p { margin: 6px 0 0; color: var(--gray5); }
 
-/* Buttons */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; padding: 7px 14px; border-radius: 10px;
-  border: 1px solid var(--line); background: var(--card); cursor: pointer; text-decoration: none; font-size: 15px; white-space: nowrap; }
-.btn:hover:not(:disabled) { border-color: var(--accent); }
-.btn:disabled { opacity: .5; cursor: default; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
-.btn.danger { color: var(--bad); }
-.btn.danger.solid { background: var(--bad); border-color: var(--bad); color: #fff; }
-.btn.small { min-height: 32px; padding: 4px 10px; font-size: 14px; }
-.btn.icon { min-width: 38px; padding: 0; }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.busy::after { content: ""; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+/* Block grid */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 35px 25px; }
+.cell { min-width: 0; }
+.block { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; width: 100%; aspect-ratio: 1 / 1; padding: 20px; border: 1px solid var(--gray2);
+  background: var(--gray0); text-align: center; cursor: pointer; overflow: hidden; }
+.block:hover { border-color: var(--gray4); }
+.block .title { font-size: var(--fs4); overflow-wrap: anywhere; }
+.block .state { font-size: var(--fs1); }
+.block.private { background: var(--red1); border-color: var(--red2); color: var(--red3); }
+.block.public { background: var(--green1); border-color: var(--green2); color: var(--green3); }
+.block.private:hover { border-color: var(--red3); }
+.block.public:hover { border-color: var(--green3); }
+.block .flag { position: absolute; top: 10px; right: 10px; font-size: var(--fs1); color: var(--alert); }
+.block.add { color: var(--gray5); }
+.block.add .plus { font-size: var(--fs7); line-height: 1; }
+.caption { margin-top: 8px; font-size: var(--fs1); color: var(--gray5); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.caption strong { color: var(--gray7); font-weight: normal; }
+.building::after { content: " …"; animation: blink 1s infinite alternate; }
+@keyframes blink { from { opacity: 0.2; } to { opacity: 1; } }
+.failed-text { color: var(--alert); }
+
+/* Plain sections */
+section.plain { max-width: 640px; margin: 80px auto 0; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 15px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--gray2); }
+.section-head h2 { margin: 0; font-size: var(--fs2); font-weight: bold; }
+.rows > div { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--gray2); }
+.rows .grow { flex: 1; min-width: 0; }
+.rows .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag { font-size: var(--fs1); }
+.tag.admin { color: var(--green3); }
+footer { margin-top: 45px; text-align: center; font-size: var(--fs1); color: var(--gray5); }
+
+/* Buttons and inputs */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 5px 12px;
+  border: 1px solid var(--gray3); border-radius: 3px; background: var(--gray0); color: var(--gray7);
+  font-size: var(--fs2); text-decoration: none; cursor: pointer; white-space: nowrap; }
+.btn:hover:not(:disabled) { border-color: var(--gray5); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.primary { background: var(--gray7); border-color: var(--gray7); color: var(--gray0); }
+.btn.danger { color: var(--red3); border-color: var(--red2); }
+.btn.danger.solid { background: var(--red3); border-color: var(--red3); color: var(--gray0); }
+.btn.link { border-color: transparent; padding: 5px 0; min-height: 0; color: var(--gray5); }
+.btn.link:hover:not(:disabled) { color: var(--gray7); border-color: transparent; }
+.btn.link.danger { color: var(--red3); }
+.busy::after { content: ""; width: 10px; height: 10px; border: 1.5px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* Devices */
-.list { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
-.item { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--line); }
-.item:first-child { border-top: 0; }
-.item .grow { min-width: 0; flex: 1; }
-.item .title { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+input[type="text"], input[type="password"] { width: 100%; min-height: 34px; padding: 6px 9px; border: 1px solid var(--gray3);
+  border-radius: 3px; background: var(--gray0); font-size: var(--fs2); }
+input.mono { font-family: var(--mono); font-size: var(--fs1); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--gray7); }
+label.field { display: block; margin-bottom: 15px; }
+label.field > span { display: block; margin-bottom: 5px; color: var(--gray5); font-size: var(--fs1); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.notice { margin-top: 10px; padding: 8px 10px; font-size: var(--fs1); background: var(--gray1); }
+.notice.bad { background: var(--red1); color: var(--red3); }
+.notice.ok { background: var(--green1); color: var(--green3); }
 
 /* Dialogs */
-dialog { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--bg); color: var(--fg);
-  width: min(720px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); }
-dialog::backdrop { background: rgba(10, 8, 5, .45); }
-.sheet { display: flex; flex-direction: column; max-height: calc(100dvh - 48px); }
-/* A fixed height keeps the app sheet from jumping as tabs change size. */
-dialog.full { height: min(760px, calc(100dvh - 48px)); }
-dialog.full .sheet { height: 100%; }
-dialog.full .sheet-body { flex: 1; }
-.sheet-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
-.sheet-head .name { font-size: 19px; }
-.sheet-body { padding: 16px; overflow: auto; }
-@media (max-width: 640px) {
-  dialog.full { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; border: 0; }
-  dialog.full .sheet { height: 100dvh; max-height: 100dvh; }
-  dialog.full .sheet-head { padding-top: max(14px, env(safe-area-inset-top)); }
-}
-.tabs { display: flex; gap: 4px; margin: 18px 0 12px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
-.tab { border: 0; background: none; padding: 8px 12px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
-.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
-pre.console { margin: 0; background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: 12.5px/1.5 var(--mono);
-  white-space: pre-wrap; word-break: break-word; overflow: auto; height: min(52dvh, 460px); }
-.console .step { font-weight: 700; }
-.console .log { color: var(--muted); }
-.console .done { color: var(--ok); font-weight: 700; }
-.console .fail { color: var(--bad); font-weight: 700; }
-.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 14px; color: var(--muted); }
-.toolbar label { display: inline-flex; align-items: center; gap: 6px; }
+dialog { padding: 0; border: 1px solid var(--gray3); background: var(--gray0); color: var(--gray7);
+  width: min(520px, calc(100vw - 30px)); max-height: calc(100dvh - 40px); }
+dialog::backdrop { background: color-mix(in srgb, var(--gray0) 85%, transparent); }
+.dialog-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid var(--gray2); }
+.dialog-head strong { font-size: var(--fs3); }
+.close { border: 0; background: none; font-size: var(--fs5); line-height: 1; padding: 0 2px; cursor: pointer; color: var(--gray5); }
+.close:hover { color: var(--gray7); }
+.dialog-body { padding: 20px; overflow: auto; }
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--gray2); cursor: pointer; }
+.choice input { margin-top: 3px; }
+.qr { width: fit-content; margin: 0 auto 15px; padding: 10px; background: #FFF; border: 1px solid var(--gray2); }
+.qr svg { display: block; width: 210px; height: 210px; }
+.copy-row { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+.copy-row input { flex: 1; min-width: 0; }
+.copy-row > span { min-width: 82px; font-size: var(--fs1); color: var(--gray5); }
 
-/* Forms */
-input[type="text"], input[type="password"] { width: 100%; min-height: 38px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line);
-  background: var(--card); }
-input.mono { font-family: var(--mono); font-size: 14px; }
+/* Block view: content on the left, info column on the right */
+dialog.view { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border: 0; }
+.view-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "main head" "main side"; height: 100dvh; }
+.view-main { grid-area: main; display: flex; flex-direction: column; min-width: 0; padding: 20px 30px 30px; }
+.view-head { grid-area: head; border-left: 1px solid var(--gray2); padding: 20px 25px 0; }
+.view-side { grid-area: side; border-left: 1px solid var(--gray2); padding: 0 25px 40px; overflow: auto; }
+.view-name { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.view-top { display: flex; align-items: center; margin-bottom: 15px; }
+.tabs { display: flex; gap: 20px; margin-bottom: 15px; }
+.tab { border: 0; background: none; padding: 0 0 3px; cursor: pointer; color: var(--gray5); border-bottom: 1px solid transparent; }
+.tab[aria-selected="true"] { color: var(--gray7); border-bottom-color: var(--gray7); }
+.panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+pre.console { flex: 1; min-height: 240px; margin: 0; padding: 15px; overflow: auto; background: var(--gray1);
+  font: var(--fs1)/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.console .step { font-weight: bold; }
+.console .log { color: var(--gray5); }
+.console .done { color: var(--green3); font-weight: bold; }
+.console .fail { color: var(--alert); font-weight: bold; }
+.toolbar { display: flex; align-items: center; gap: 15px; margin-bottom: 8px; font-size: var(--fs1); color: var(--gray5); }
+.toolbar label { display: inline-flex; align-items: center; gap: 6px; }
+.view-head h2 { margin: 0 0 4px; font-size: var(--fs5); font-weight: normal; overflow-wrap: anywhere; }
+.view-side h3 { margin: 30px 0 8px; font-size: var(--fs2); font-weight: bold; }
+.view-head .status { font-size: var(--fs1); margin-bottom: 10px; }
+.view-head .url { display: block; margin-bottom: 15px; overflow-wrap: anywhere; font-size: var(--fs1); }
+dl.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--fs1); }
+dl.facts dt { color: var(--gray5); }
+dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: var(--fs1); cursor: pointer; }
+.check input { margin-top: 2px; }
+.steps { margin: 10px 0 0; padding-left: 18px; font-size: var(--fs1); color: var(--gray5); }
 .env-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto auto; gap: 6px; align-items: center; margin-bottom: 6px; }
-.env-row .key { font-family: var(--mono); font-size: 14px; overflow: hidden; text-overflow: ellipsis; }
-.env-row.removed .key, .env-row.removed input { text-decoration: line-through; opacity: .5; }
-.env-add { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 6px; margin-top: 12px; }
-@media (max-width: 480px) {
-  .tab { padding: 8px 9px; }
+.env-row .key { font-family: var(--mono); font-size: var(--fs1); overflow: hidden; text-overflow: ellipsis; }
+.env-row.removed .key, .env-row.removed input { text-decoration: line-through; opacity: 0.45; }
+.env-add { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 6px; margin-top: 15px; }
+
+@media (max-width: 860px) {
+  .view-layout { grid-template-columns: 1fr; grid-template-rows: auto auto auto;
+    grid-template-areas: "head" "main" "side"; height: auto; min-height: 100dvh; }
+  .view-head { border-left: 0; padding: 15px 15px 0; padding-top: max(15px, env(safe-area-inset-top)); }
+  .view-main { padding: 25px 15px 10px; }
+  .view-side { border-left: 0; padding: 0 15px 40px; overflow: visible; }
+  pre.console { min-height: 50dvh; }
+}
+@media (max-width: 520px) {
+  main { padding: 0 15px 60px; }
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 25px 15px; }
+  .block { padding: 12px; }
+  .block .title { font-size: var(--fs3); }
   .env-row { grid-template-columns: minmax(0, 1fr) auto auto; }
   .env-row .key { grid-column: 1 / -1; }
   .env-add { grid-template-columns: 1fr; }
 }
-.field { margin-bottom: 14px; }
-.field > span { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
-.choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; cursor: pointer; background: var(--card); }
-.choice:has(input:checked) { border-color: var(--accent); }
-.choice input { margin-top: 4px; accent-color: var(--accent); }
-.switch { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; background: var(--card);
-  border: 1px solid var(--line); border-radius: 10px; }
-.switch input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
-dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 14px; margin: 16px 0; }
-dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; overflow-wrap: anywhere; }
-.card { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
-.card h3 { margin: 0 0 6px; font-size: 15px; }
-.card ol { margin: 8px 0 0; padding-left: 20px; font-size: 14px; color: var(--muted); }
-.card ol li { margin-bottom: 4px; }
-.copy-row { display: flex; gap: 6px; margin-top: 8px; }
-.copy-row input { flex: 1; min-width: 0; }
-.copy-row label { font-size: 13px; color: var(--muted); min-width: 80px; align-self: center; }
-.danger-zone { margin-top: 24px; padding: 14px; border: 1px solid var(--bad); border-radius: 10px; }
-.danger-zone h3 { margin: 0 0 6px; font-size: 15px; color: var(--bad); }
-.qr { background: #fff; border-radius: 12px; padding: 10px; width: fit-content; margin: 4px auto 14px; }
-.qr svg { display: block; width: 220px; height: 220px; }
-.link-box { display: flex; gap: 6px; }
-.notice { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--soft); border: 1px solid var(--line); margin-top: 10px; }
-.notice.bad { background: var(--bad-bg); border-color: transparent; color: var(--bad); }
-.notice.ok { background: var(--ok-bg); border-color: transparent; color: var(--ok); }
-footer { margin-top: 36px; font-size: 13px; color: var(--muted); text-align: center; }
-.toast { position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--fg); color: var(--bg);
-  padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: calc(100vw - 32px); z-index: 10; opacity: 0; transition: opacity .2s; pointer-events: none; }
+
+.toast { position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+  padding: 8px 14px; background: var(--gray7); color: var(--gray0); font-size: var(--fs1); border-radius: 3px;
+  max-width: calc(100vw - 30px); z-index: 10; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
 .toast.show { opacity: 1; }
-[hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <div class="top">
-  <div class="top-inner">
-    <div class="brand">🦔 hedgehog</div>
-    <div class="tunnel" id="tunnel"><span class="dot"></span><span>…</span></div>
-  </div>
+  <span class="wordmark">🦔 hedgehog</span>
+  <span class="online" id="tunnel">…</span>
 </div>
 
 <main>
-  <section>
-    <div class="section-head">
-      <h2>Apps</h2>
-      <span class="row"><span class="muted small" id="app-summary"></span><button class="btn small" id="new-open">New app</button></span>
-    </div>
-    <div class="apps" id="apps"><div class="empty">Loading…</div></div>
-  </section>
+  <header class="channel">
+    <h1>Apps</h1>
+    <p id="app-summary">&nbsp;</p>
+  </header>
 
-  <section>
-    <div class="section-head"><h2>Devices</h2><button class="btn small" id="pair-open">Pair a device</button></div>
-    <div class="list" id="devices"></div>
+  <div class="grid" id="apps"></div>
+
+  <section class="plain">
+    <div class="section-head"><h2>Devices</h2><button class="btn link" id="pair-open">Pair a device →</button></div>
+    <div class="rows" id="devices"></div>
   </section>
 
   <footer id="footer"></footer>
 </main>
 
-<dialog id="app-dialog" class="full" aria-labelledby="app-name">
-  <div class="sheet">
-    <div class="sheet-head">
-      <div class="row" style="flex:1; min-width:0">
-        <span class="name" id="app-name"></span>
-        <span class="pill" id="app-status"></span>
+<dialog id="app-dialog" class="view" aria-labelledby="app-name">
+  <div class="view-layout">
+    <div class="view-main">
+      <div class="view-top">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="output" aria-selected="true">Output</button>
+          <button class="tab" role="tab" data-tab="logs">Logs</button>
+          <button class="tab" role="tab" data-tab="build">Build</button>
+          <button class="tab" role="tab" data-tab="env">Env</button>
+        </div>
       </div>
-      <button class="btn icon" id="app-close" aria-label="Close">✕</button>
-    </div>
-    <div class="sheet-body">
-      <a class="url" id="app-url" target="_blank" rel="noopener"></a>
-      <div class="error-line" id="app-error" hidden></div>
-      <div class="actions" style="margin-top:14px">
-        <a class="btn primary" id="act-open" target="_blank" rel="noopener">Open ↗</a>
-        <button class="btn" id="act-redeploy">Redeploy</button>
-        <button class="btn" id="act-pull" hidden>Pull &amp; redeploy</button>
-        <button class="btn" id="act-restart">Restart</button>
-        <button class="btn" id="act-stop">Stop</button>
+      <div class="panel" data-panel="output">
+        <pre class="console" id="output"></pre>
       </div>
-
-      <div class="tabs" role="tablist">
-        <button class="tab" role="tab" data-tab="output" aria-selected="true">Output</button>
-        <button class="tab" role="tab" data-tab="logs">Logs</button>
-        <button class="tab" role="tab" data-tab="build">Build</button>
-        <button class="tab" role="tab" data-tab="env">Env</button>
-        <button class="tab" role="tab" data-tab="settings">Settings</button>
-      </div>
-
-      <div data-panel="output">
-        <pre class="console" id="output"><span class="log">Redeploy, pull, or restart, and the output shows up here.</span></pre>
-      </div>
-      <div data-panel="logs" hidden>
+      <div class="panel" data-panel="logs" hidden>
         <div class="toolbar">
           <label><input type="checkbox" id="logs-follow" checked> Follow</label>
-          <span class="spacer"></span>
-          <button class="btn small" id="logs-reload">Reload</button>
+          <button class="btn link" id="logs-reload">Reload</button>
         </div>
         <pre class="console" id="logs"></pre>
       </div>
-      <div data-panel="build" hidden>
+      <div class="panel" data-panel="build" hidden>
         <pre class="console" id="build"></pre>
       </div>
-      <div data-panel="env" hidden>
-        <p class="muted small" style="margin-top:0">Set here, these override the app's <code>.env</code> and <code>hedgehog.toml</code>. Saving restarts the app.</p>
+      <div class="panel" data-panel="env" hidden>
+        <p class="slate small" style="margin-top:0">Set here, these override the app's <code>.env</code> and <code>hedgehog.toml</code>. Saving restarts the app.</p>
         <div id="env-rows"></div>
         <form class="env-add" id="env-add">
           <input type="text" class="mono" id="env-key" placeholder="KEY" autocomplete="off" autocapitalize="characters" spellcheck="false">
           <input type="text" class="mono" id="env-value" placeholder="value" autocomplete="off" spellcheck="false">
           <button class="btn" type="submit">Add</button>
         </form>
-        <div class="actions" style="margin-top:14px">
+        <div class="actions" style="margin-top:15px">
           <button class="btn primary" id="env-save" disabled>Save &amp; restart</button>
-          <button class="btn" id="env-discard" disabled>Discard changes</button>
+          <button class="btn" id="env-discard" disabled>Discard</button>
         </div>
         <div class="notice" id="env-notice" hidden></div>
       </div>
-      <div data-panel="settings" hidden>
-        <label class="switch">
-          <span><strong>Public</strong><br><span class="muted small">Anyone with the URL can open it, not only your paired devices.</span></span>
-          <input type="checkbox" id="public-toggle">
-        </label>
-        <dl class="facts" id="facts"></dl>
-        <div class="card" id="hook-card" hidden>
-          <h3>Deploy on push</h3>
-          <p class="small muted" style="margin:0" id="hook-intro"></p>
-          <div class="copy-row"><label>Payload URL</label><input type="text" class="mono" id="hook-url" readonly><button class="btn small" data-copy="hook-url">Copy</button></div>
-          <div class="copy-row"><label>Secret</label><input type="password" class="mono" id="hook-secret" readonly><button class="btn small" id="hook-show">Show</button><button class="btn small" data-copy="hook-secret">Copy</button></div>
-          <ol>
-            <li>On GitHub, open the repo's <strong>Settings → Webhooks → Add webhook</strong>.</li>
-            <li>Paste the payload URL and secret, and set the content type to <code>application/json</code>.</li>
-            <li>Keep <strong>Just the push event</strong>, and save. GitHub sends a test ping right away.</li>
-          </ol>
-          <div class="notice" id="hook-notice" hidden></div>
-          <button class="btn small" id="hook-rotate" style="margin-top:10px">New secret</button>
-        </div>
-        <div class="danger-zone">
-          <h3>Remove this app</h3>
-          <p class="small muted" style="margin:0 0 10px">Stops it and moves its folder to the Trash. Its data and database are kept unless you tick the box.</p>
-          <label class="small" style="display:flex; gap:8px; align-items:center; margin-bottom:10px">
-            <input type="checkbox" id="remove-purge"> Also delete its data folder and database
-          </label>
-          <div class="link-box">
-            <input type="text" id="remove-confirm" placeholder="Type the app name to confirm" autocomplete="off" autocapitalize="off" spellcheck="false">
-            <button class="btn danger solid" id="remove-go" disabled>Remove</button>
-          </div>
-        </div>
-      </div>
     </div>
+
+    <div class="view-head">
+      <div class="view-name">
+        <h2 id="app-name"></h2>
+        <button class="close" id="app-close" aria-label="Close" autofocus>×</button>
+      </div>
+      <div class="status" id="app-status"></div>
+      <a class="url" id="app-url" target="_blank" rel="noopener"></a>
+      <div class="actions">
+        <a class="btn primary" id="act-open" target="_blank" rel="noopener">Open ↗</a>
+        <button class="btn" id="act-redeploy">Redeploy</button>
+        <button class="btn" id="act-pull" hidden>Pull &amp; redeploy</button>
+        <button class="btn" id="act-restart">Restart</button>
+        <button class="btn" id="act-stop">Stop</button>
+      </div>
+      <div class="notice bad" id="app-error" hidden></div>
+    </div>
+
+    <aside class="view-side">
+      <h3>Info</h3>
+      <dl class="facts" id="facts"></dl>
+
+      <h3>Access</h3>
+      <label class="check">
+        <input type="checkbox" id="public-toggle">
+        <span>Public — anyone with the URL can open it, not only your paired devices.</span>
+      </label>
+
+      <div id="hook-card" hidden>
+        <h3>Deploy on push</h3>
+        <p class="small slate" style="margin:0" id="hook-intro"></p>
+        <div class="copy-row"><span>Payload URL</span><input type="text" class="mono" id="hook-url" readonly><button class="btn" data-copy="hook-url">Copy</button></div>
+        <div class="copy-row"><span>Secret</span><input type="password" class="mono" id="hook-secret" readonly><button class="btn" id="hook-show">Show</button><button class="btn" data-copy="hook-secret">Copy</button></div>
+        <ol class="steps">
+          <li>On GitHub, open the repo's Settings → Webhooks → Add webhook.</li>
+          <li>Paste the payload URL and secret; content type <code>application/json</code>.</li>
+          <li>Keep "Just the push event" and save. GitHub sends a test ping.</li>
+        </ol>
+        <div class="notice" id="hook-notice" hidden></div>
+        <button class="btn link" id="hook-rotate">New secret</button>
+      </div>
+
+      <h3>Remove</h3>
+      <p class="small slate" style="margin:0 0 8px">Stops it and moves its folder to the Trash. Data and database are kept unless you tick the box.</p>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="remove-purge"><span>Also delete its data folder and database</span></label>
+      <div class="copy-row">
+        <input type="text" id="remove-confirm" placeholder="Type the app name to confirm" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="btn danger solid" id="remove-go" disabled>Remove</button>
+      </div>
+    </aside>
   </div>
 </dialog>
 
 <dialog id="new-dialog" aria-labelledby="new-title">
-  <div class="sheet">
-    <div class="sheet-head">
-      <span class="name" id="new-title" style="flex:1">New app from Git</span>
-      <button class="btn icon" id="new-close" aria-label="Close">✕</button>
-    </div>
-    <div class="sheet-body">
-      <form id="new-form">
-        <label class="field"><span>Repository</span>
-          <input type="text" class="mono" id="new-url" placeholder="https://github.com/you/repo" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
-        <label class="field"><span>App name</span>
-          <input type="text" id="new-name" placeholder="from the repo name" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-        <label class="field"><span>Branch <span class="muted">(optional)</span></span>
-          <input type="text" class="mono" id="new-branch" placeholder="the repo's default branch" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-        <p class="small muted">hedgehog clones it on your Mac, builds it, and puts it live. Private repos need the Mac to have access, e.g. an SSH key or <code>gh auth login</code>.</p>
-        <button class="btn primary" type="submit" style="width:100%">Create app</button>
-      </form>
-      <div id="new-progress" hidden>
-        <pre class="console" id="new-output"></pre>
-        <div class="actions" style="margin-top:12px">
-          <button class="btn primary" id="new-view" hidden>View app</button>
-          <button class="btn" id="new-again" hidden>Back</button>
-        </div>
+  <div class="dialog-head">
+    <strong id="new-title">New app from Git</strong>
+    <button class="close" id="new-close" aria-label="Close">×</button>
+  </div>
+  <div class="dialog-body">
+    <form id="new-form">
+      <label class="field"><span>Repository</span>
+        <input type="text" class="mono" id="new-url" placeholder="https://github.com/you/repo" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      <label class="field"><span>App name</span>
+        <input type="text" id="new-name" placeholder="from the repo name" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <label class="field"><span>Branch (optional)</span>
+        <input type="text" class="mono" id="new-branch" placeholder="the repo's default branch" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <p class="small slate">hedgehog clones it on your Mac, builds it, and puts it live. Private repos need the Mac to have access, e.g. an SSH key or <code>gh auth login</code>.</p>
+      <button class="btn primary" type="submit" style="width:100%">Create app</button>
+    </form>
+    <div id="new-progress" hidden>
+      <pre class="console" id="new-output" style="height:min(50dvh, 380px)"></pre>
+      <div class="actions" style="margin-top:15px">
+        <button class="btn primary" id="new-view" hidden>View app</button>
+        <button class="btn" id="new-again" hidden>Back</button>
       </div>
     </div>
   </div>
 </dialog>
 
 <dialog id="pair-dialog" aria-labelledby="pair-title">
-  <div class="sheet">
-    <div class="sheet-head">
-      <span class="name" id="pair-title" style="flex:1">Pair a device</span>
-      <button class="btn icon" id="pair-close" aria-label="Close">✕</button>
-    </div>
-    <div class="sheet-body">
-      <form id="pair-form">
-        <label class="field"><span>Name</span><input type="text" id="pair-label" placeholder="e.g. iPad" autocomplete="off"></label>
-        <label class="choice"><input type="radio" name="role" value="apps" checked>
-          <span><strong>Open apps</strong><br><span class="muted small">Can use your private apps. Can't see this dashboard.</span></span></label>
-        <label class="choice"><input type="radio" name="role" value="admin">
-          <span><strong>Manage hedgehog</strong><br><span class="muted small">Can also deploy, restart, edit env vars, and pair devices from here.</span></span></label>
-        <button class="btn primary" type="submit" style="width:100%; margin-top:6px">Create pairing link</button>
-      </form>
-      <div id="pair-result" hidden>
-        <p class="small muted" style="margin-top:0; text-align:center">Scan with the other device's camera, or send it the link.</p>
-        <div class="qr" id="pair-qr"></div>
-        <div class="link-box">
-          <input type="text" id="pair-link" readonly class="mono">
-          <button class="btn" id="pair-copy">Copy</button>
-        </div>
-        <p class="small muted" id="pair-expiry"></p>
-        <button class="btn" id="pair-again" style="width:100%">Pair another</button>
+  <div class="dialog-head">
+    <strong id="pair-title">Pair a device</strong>
+    <button class="close" id="pair-close" aria-label="Close">×</button>
+  </div>
+  <div class="dialog-body">
+    <form id="pair-form">
+      <label class="field"><span>Name</span><input type="text" id="pair-label" placeholder="e.g. iPad" autocomplete="off"></label>
+      <label class="choice"><input type="radio" name="role" value="apps" checked>
+        <span>Open apps<br><span class="small slate">Can use your private apps. Can't see this dashboard.</span></span></label>
+      <label class="choice" style="border-bottom:1px solid var(--gray2)"><input type="radio" name="role" value="admin">
+        <span>Manage hedgehog<br><span class="small slate">Can also deploy, restart, edit env vars, and pair devices from here.</span></span></label>
+      <button class="btn primary" type="submit" style="width:100%; margin-top:15px">Create pairing link</button>
+    </form>
+    <div id="pair-result" hidden>
+      <p class="small slate" style="margin-top:0; text-align:center">Scan with the other device's camera, or send it the link.</p>
+      <div class="qr" id="pair-qr"></div>
+      <div class="copy-row">
+        <input type="text" id="pair-link" readonly class="mono">
+        <button class="btn" id="pair-copy">Copy</button>
       </div>
+      <p class="small slate" id="pair-expiry"></p>
+      <button class="btn" id="pair-again" style="width:100%">Pair another</button>
     </div>
   </div>
 </dialog>
@@ -421,61 +445,63 @@ async function readLines(response, onLine) {
 
 /* ---------- Overview ---------- */
 
-function renderTunnel() {
-  const tunnel = state.status?.tunnel;
-  const dot = $("tunnel").querySelector(".dot");
-  const label = $("tunnel").querySelector("span:last-child");
-  const stateName = tunnel?.state || "unknown";
-  dot.className = "dot " + ({ connected: "ok", off: "", stopped: "bad" }[stateName] ?? "wait");
-  label.textContent = stateName === "connected" ? "online" : stateName;
-  $("tunnel").title = tunnel?.error || "";
+function statusText(app) {
+  if (app.status === "running") return app.deployed_at ? `running · ${ago(app.deployed_at)}` : "running";
+  return app.status;
 }
 
-function appCard(app) {
-  const meta = el("div", { class: "meta" },
-    el("span", { class: "chip" + (app.public ? " accent" : ""), text: app.public ? "public" : "private" }),
-    app.deployed_at ? el("span", { text: `deployed ${ago(app.deployed_at)}` }) : null,
-    app.builder ? el("span", { text: app.builder }) : null,
-    app.revision ? el("span", { text: app.revision.slice(0, 7) }) : null,
+function renderTunnel() {
+  const tunnel = state.status?.tunnel;
+  const name = tunnel?.state || "unknown";
+  const node = $("tunnel");
+  node.className = "online " + ({ connected: "ok", stopped: "bad" }[name] ?? "");
+  node.textContent = name === "connected" ? "online" : name === "off" ? "tunnel off" : name;
+  node.title = tunnel?.error || "";
+}
+
+function appCell(app) {
+  const access = app.public ? "public" : "private";
+  const block = el("button", { class: `block ${access}`, "aria-label": `${app.name}, ${app.status}`, onclick: () => openApp(app.name) },
+    app.last_error && app.status !== "failed" ? el("span", { class: "flag", text: "last deploy failed" }) : null,
+    el("div", { class: "title", text: app.name }),
+    el("div", { class: "state" + (app.status === "building" ? " building" : "") + (app.status === "failed" ? " failed-text" : ""), text: statusText(app) }),
   );
-  return el("button", { class: "app", onclick: () => openApp(app.name) },
-    el("div", { class: "row" },
-      el("span", { class: "name", text: app.name }),
-      el("span", { class: "spacer" }),
-      el("span", { class: `pill ${app.status}`, text: app.status })),
-    el("div", { class: "url", text: app.url || "" }),
-    meta,
-    app.last_error ? el("div", { class: "error-line", text: "Last deploy failed: " + app.last_error.split("\n")[0] }) : null,
-  );
+  const host = (app.url || "").replace(/^https?:\/\//, "");
+  return el("div", { class: "cell" }, block,
+    el("div", { class: "caption" }, el("strong", { text: access }), ` · ${host}`));
+}
+
+function addCell() {
+  return el("div", { class: "cell" },
+    el("button", { class: "block add", id: "new-open", onclick: openNew },
+      el("div", { class: "plus", text: "+" }),
+      el("div", { text: "New app from Git" })),
+    el("div", { class: "caption", text: state.apps.length ? "" : "or drop a folder into ~/Hedgehog/apps" }));
 }
 
 function renderApps() {
-  const list = $("apps");
-  list.replaceChildren();
-  if (!state.apps.length) {
-    list.append(el("div", { class: "empty" },
-      "No apps yet. Drop a project folder into ", el("code", { text: state.status?.apps_dir || "~/Hedgehog/apps" }),
-      " on your Mac, or run ", el("code", { text: "hedgehog deploy" }), " in one."));
-  } else {
-    for (const app of state.apps) list.append(appCard(app));
-  }
+  const grid = $("apps");
+  grid.replaceChildren(addCell(), ...state.apps.map(appCell));
   const running = state.apps.filter((app) => app.status === "running").length;
-  $("app-summary").textContent = state.apps.length ? `${running} of ${state.apps.length} running` : "";
+  const failing = state.apps.filter((app) => app.last_error).length;
+  const parts = [`${state.apps.length} app${state.apps.length === 1 ? "" : "s"}`];
+  if (state.apps.length) parts.push(`${running} running`);
+  if (failing) parts.push(`${failing} need${failing === 1 ? "s" : ""} attention`);
+  $("app-summary").textContent = parts.join(" · ");
 }
 
 function renderDevices() {
   const list = $("devices");
   list.replaceChildren();
   for (const device of state.devices) {
-    const revoke = el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeDevice(device) });
-    list.append(el("div", { class: "item" },
+    list.append(el("div", {},
       el("div", { class: "grow" },
-        el("div", { class: "title", text: device.label || "Unnamed device" }),
-        el("div", { class: "muted small", text: `paired ${ago(device.created_at)}` + (device.current ? " · this device" : "") })),
-      el("span", { class: "chip" + (device.admin ? " accent" : ""), text: device.admin ? "manage" : "open apps" }),
-      revoke));
+        el("div", { class: "name", text: device.label || "Unnamed device" }),
+        el("div", { class: "small slate", text: `paired ${ago(device.created_at)}` + (device.current ? " · this device" : "") })),
+      el("span", { class: "tag" + (device.admin ? " admin" : " slate"), text: device.admin ? "manages" : "opens apps" }),
+      el("button", { class: "btn link danger", text: "Revoke", onclick: () => revokeDevice(device) })));
   }
-  if (!state.devices.length) list.append(el("div", { class: "item muted", text: "No devices yet." }));
+  if (!state.devices.length) list.append(el("div", { class: "slate", text: "No devices yet." }));
 }
 
 function renderFooter() {
@@ -516,7 +542,7 @@ async function revokeDevice(device) {
   } catch (error) { toast(error.message); }
 }
 
-/* ---------- App sheet ---------- */
+/* ---------- Block view ---------- */
 
 const selectedApp = () => state.apps.find((app) => app.name === state.selected);
 
@@ -524,9 +550,9 @@ function renderAppHeader() {
   const app = selectedApp();
   if (!app) { closeApp(); return; }
   $("app-name").textContent = app.name;
-  const pill = $("app-status");
-  pill.className = `pill ${app.status}`;
-  pill.textContent = app.status;
+  const status = $("app-status");
+  status.textContent = `${app.public ? "public" : "private"} · ${statusText(app)}`;
+  status.style.color = app.status === "failed" ? "var(--alert)" : app.public ? "var(--green3)" : "var(--red3)";
   const url = safeUrl(app.url);
   $("app-url").textContent = app.url || "";
   if (url) $("app-url").href = url; else $("app-url").removeAttribute("href");
@@ -546,7 +572,7 @@ function renderAppHeader() {
   const fact = (label, value) => value && facts.append(el("dt", { text: label }), el("dd", { text: value }));
   fact("Folder", app.source_dir);
   fact("Builder", app.builder);
-  fact("Commit", app.revision);
+  fact("Commit", app.revision?.slice(0, 12));
   fact("Deployed", app.deployed_at ? new Date(app.deployed_at * 1000).toLocaleString() : null);
 }
 
@@ -558,6 +584,7 @@ function openApp(name) {
   $("output").replaceChildren(el("span", { class: "log", text: "Redeploy, pull, or restart, and the output shows up here." }));
   renderAppHeader();
   selectTab("output");
+  loadWebhook();
   $("app-dialog").showModal();
 }
 
@@ -575,7 +602,6 @@ function selectTab(name) {
   if (name === "logs") startLogs();
   if (name === "build") loadBuildLog();
   if (name === "env") loadEnv();
-  if (name === "settings") loadWebhook();
 }
 
 function appendConsole(pre, text, cls) {
@@ -585,20 +611,27 @@ function appendConsole(pre, text, cls) {
   if (atBottom) pre.scrollTop = pre.scrollHeight;
 }
 
-/* Renders a deploy's NDJSON stream into a console; returns the final event. */
+/* Renders a deploy's NDJSON stream into a console. Returns the last event,
+   or null if the stream ended or dropped before the deploy finished. */
 async function streamDeploy(response, out) {
   let last = null;
-  await readLines(response, (line) => {
-    let event;
-    try { event = JSON.parse(line); } catch { return; }
-    last = event;
-    if (event.type === "step") appendConsole(out, `▸ ${event.message}`, "step");
-    else if (event.type === "log") appendConsole(out, event.line, "log");
-    else if (event.type === "done") appendConsole(out, `✓ Live${event.url ? " at " + event.url : ""}`, "done");
-    else if (event.type === "failed") appendConsole(out, `✗ ${event.error}`, "fail");
-  });
-  return last;
+  try {
+    await readLines(response, (line) => {
+      let event;
+      try { event = JSON.parse(line); } catch { return; }
+      last = event;
+      if (event.type === "step") appendConsole(out, `▸ ${event.message}`, "step");
+      else if (event.type === "log") appendConsole(out, event.line, "log");
+      else if (event.type === "done") appendConsole(out, `✓ Live${event.url ? " at " + event.url : ""}`, "done");
+      else if (event.type === "failed") appendConsole(out, `✗ ${event.error}`, "fail");
+    });
+  } catch {
+    // A dropped connection: the deploy itself carries on on the Mac.
+  }
+  return last && (last.type === "done" || last.type === "failed") ? last : null;
 }
+
+const DROPPED = "The connection dropped, but the deploy carries on. The status updates when it's done.";
 
 async function runAction(button, method, path, label) {
   const name = state.selected;
@@ -612,10 +645,7 @@ async function runAction(button, method, path, label) {
   appendConsole(out, `${label} ${name}…`, "step");
   try {
     const response = await call(method, `/apps/${encodeURIComponent(name)}/${path}`);
-    const last = await streamDeploy(response, out);
-    if (!last || (last.type !== "done" && last.type !== "failed")) {
-      appendConsole(out, "The connection dropped; the deploy carries on. The status above updates when it's done.", "log");
-    }
+    if (!(await streamDeploy(response, out))) appendConsole(out, DROPPED, "log");
   } catch (error) {
     appendConsole(out, `✗ ${error.message}`, "fail");
   } finally {
@@ -688,7 +718,7 @@ function renderEnv() {
   rows.replaceChildren();
   const env = state.env;
   const keys = [...new Set([...Object.keys(env.saved), ...Object.keys(env.set)])].sort();
-  if (!keys.length) rows.append(el("p", { class: "muted small", text: "No variables set here yet." }));
+  if (!keys.length) rows.append(el("p", { class: "slate small", text: "No variables set here yet." }));
   for (const key of keys) {
     const removed = env.unset.has(key);
     const value = env.set[key] ?? env.saved[key] ?? "";
@@ -699,12 +729,12 @@ function renderEnv() {
       if (input.value === env.saved[key]) delete env.set[key]; else env.set[key] = input.value;
       updateEnvButtons();
     });
-    const reveal = el("button", { class: "btn small", type: "button", text: "Show", onclick: () => {
+    const reveal = el("button", { class: "btn", type: "button", text: "Show", onclick: () => {
       const hidden = input.type === "password";
       input.type = hidden ? "text" : "password";
       reveal.textContent = hidden ? "Hide" : "Show";
     } });
-    const remove = el("button", { class: "btn small danger", type: "button", text: removed ? "Undo" : "Remove", onclick: () => {
+    const remove = el("button", { class: "btn danger", type: "button", text: removed ? "Undo" : "Remove", onclick: () => {
       if (removed) env.unset.delete(key);
       else if (key in env.saved) { env.unset.add(key); delete env.set[key]; }
       else delete env.set[key];
@@ -723,7 +753,7 @@ function updateEnvButtons() {
 
 async function loadEnv() {
   $("env-notice").hidden = true;
-  $("env-rows").replaceChildren(el("p", { class: "muted small", text: "Loading…" }));
+  $("env-rows").replaceChildren(el("p", { class: "slate small", text: "Loading…" }));
   try {
     const saved = await getJson(`/apps/${encodeURIComponent(state.selected)}/env`);
     state.env = { saved, set: {}, unset: new Set() };
@@ -753,10 +783,9 @@ async function saveEnv() {
   try {
     const response = await call("PATCH", `/apps/${encodeURIComponent(state.selected)}/env`, { set: env.set, unset: [...env.unset] });
     const { restarting } = await response.json();
+    await loadEnv();
     notice.className = "notice ok";
     notice.textContent = restarting ? "Saved. Restarting the app with the new values…" : "Saved. They'll apply on the next deploy.";
-    notice.hidden = false;
-    await loadEnv();
     notice.hidden = false;
     setTimeout(refresh, 1500);
   } catch (error) {
@@ -766,7 +795,7 @@ async function saveEnv() {
   }
 }
 
-/* Settings */
+/* Access and removal */
 async function setPublic(event) {
   const app = selectedApp();
   const wanted = event.target.checked;
@@ -800,25 +829,34 @@ async function removeApp() {
 }
 
 /* Deploy on push */
+function setWebhookFields(info) {
+  $("hook-url").value = info?.url || "";
+  $("hook-secret").value = info?.secret || "";
+  $("hook-secret").type = "password";
+  $("hook-show").textContent = "Show";
+  for (const id of ["hook-show", "hook-rotate"]) $(id).disabled = !info;
+  for (const button of document.querySelectorAll("#hook-card [data-copy]")) button.disabled = !info;
+}
+
 async function loadWebhook() {
   const app = selectedApp();
-  const card = $("hook-card");
-  card.hidden = !app?.git;
-  if (!app?.git) return;
+  $("hook-card").hidden = !app?.git;
   $("hook-notice").hidden = true;
+  setWebhookFields(null);
+  $("hook-intro").textContent = "Loading…";
+  if (!app?.git) return;
+  const name = app.name;
   try {
-    showWebhook(await getJson(`/apps/${encodeURIComponent(app.name)}/webhook`));
+    const info = await getJson(`/apps/${encodeURIComponent(name)}/webhook`);
+    if (state.selected === name) showWebhook(info);
   } catch (error) {
-    $("hook-intro").textContent = error.message;
+    if (state.selected === name) $("hook-intro").textContent = error.message;
   }
 }
 
 function showWebhook(info) {
   $("hook-intro").textContent = `GitHub calls hedgehog on every push; pushes to ${info.branch || "the checked-out branch"} pull and deploy this app.`;
-  $("hook-url").value = info.url;
-  $("hook-secret").value = info.secret;
-  $("hook-secret").type = "password";
-  $("hook-show").textContent = "Show";
+  setWebhookFields(info);
   if (info.url.startsWith("http://127.0.0.1")) {
     $("hook-notice").className = "notice bad";
     $("hook-notice").textContent = "The tunnel is off, so GitHub can't reach this Mac yet.";
@@ -878,12 +916,12 @@ async function createApp(event) {
   appendConsole(out, `Creating ${name}…`, "step");
   state.busy = true;
   let last = null;
+  let started = false;
   try {
     const response = await call("POST", "/apps", { git_url: url, name, branch });
+    started = true;
     last = await streamDeploy(response, out);
-    if (!last || (last.type !== "done" && last.type !== "failed")) {
-      appendConsole(out, "The connection dropped; the deploy carries on. Watch it in the app list.", "log");
-    }
+    if (!last) appendConsole(out, DROPPED, "log");
   } catch (error) {
     appendConsole(out, `✗ ${error.message}`, "fail");
   } finally {
@@ -893,7 +931,8 @@ async function createApp(event) {
   const exists = state.apps.some((app) => app.name === name);
   $("new-view").hidden = !exists;
   $("new-view").onclick = () => { $("new-dialog").close(); openApp(name); };
-  $("new-again").hidden = exists && last?.type === "done";
+  // Offer to go back only when nothing is in flight or it clearly failed.
+  $("new-again").hidden = !(last?.type === "failed" || !started);
 }
 
 /* ---------- Pairing ---------- */
@@ -958,7 +997,6 @@ $("pair-close").addEventListener("click", () => $("pair-dialog").close());
 $("pair-form").addEventListener("submit", createPair);
 $("pair-copy").addEventListener("click", copyPairLink);
 $("pair-again").addEventListener("click", openPair);
-$("new-open").addEventListener("click", openNew);
 $("new-close").addEventListener("click", () => $("new-dialog").close());
 $("new-form").addEventListener("submit", createApp);
 $("new-again").addEventListener("click", () => { $("new-form").hidden = false; $("new-progress").hidden = true; });
@@ -971,6 +1009,7 @@ $("hook-show").addEventListener("click", () => {
 });
 for (const button of document.querySelectorAll("[data-copy]")) button.addEventListener("click", () => copyField(button.dataset.copy));
 
+renderApps();
 refresh();
 setInterval(() => { if (document.visibilityState === "visible" && !state.busy) refresh(); }, 5000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });

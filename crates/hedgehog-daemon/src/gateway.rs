@@ -344,21 +344,21 @@ async fn handle_home(inner: &Inner, request: Request<Incoming>) -> Response<Body
     if device.admin {
         return html(StatusCode::OK, DASHBOARD.to_string());
     }
-    let mut apps: Vec<(String, String, &'static str)> = inner
+    let mut apps: Vec<pages::AppLink> = inner
         .upstreams
         .read()
         .unwrap()
         .iter()
         .filter_map(|(app, upstream)| {
-            let status = match (upstream.port.is_some(), upstream.public) {
-                (false, _) => "not running",
-                (true, true) => "public",
-                (true, false) => "private",
-            };
-            Some((app.clone(), inner.app_url(app)?, status))
+            Some(pages::AppLink {
+                url: inner.app_url(app)?,
+                name: app.clone(),
+                public: upstream.public,
+                running: upstream.port.is_some(),
+            })
         })
         .collect();
-    apps.sort();
+    apps.sort_by(|a, b| a.name.cmp(&b.name));
     html(StatusCode::OK, pages::home(&apps))
 }
 
