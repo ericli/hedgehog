@@ -751,6 +751,7 @@ dependencies = [
  "hedgehog-core",
  "hedgehog-daemon",
  "ignore",
+ "libc",
  "qrcode",
  "reqwest",
  "rustls",

@@ -1,5 +1,6 @@
 mod client;
 mod commands;
+mod db;
 mod pack;
 mod style;
 
@@ -92,8 +93,11 @@ enum Command {
         #[command(subcommand)]
         action: Option<DevicesAction>,
     },
-    /// Open psql on an app's database (run on the hedgehog Mac).
-    Db { app: String },
+    /// A local dev Postgres for working on apps, and psql shortcuts.
+    Db {
+        #[command(subcommand)]
+        action: DbAction,
+    },
     /// Show the daemon, Docker, and tunnel status.
     Status,
     /// Check that everything hedgehog needs is installed.
@@ -120,6 +124,50 @@ enum EnvAction {
     Unset { keys: Vec<String> },
     /// Set every variable from a dotenv file.
     Import { file: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum DbAction {
+    /// Start a dev Postgres on localhost (same version hedgehog runs apps with).
+    Up {
+        /// Port on localhost (default 5432, or the last one you picked).
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// Stop the dev Postgres. Its data is kept.
+    Down,
+    /// Give a project its own dev database and add DATABASE_URL to its .env.
+    Init {
+        /// Project folder (default: the current one).
+        path: Option<PathBuf>,
+        /// Database name. Defaults to the app name `hedgehog deploy` would use.
+        #[arg(long)]
+        name: Option<String>,
+        /// Replace a DATABASE_URL that's already in .env.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print a project's dev DATABASE_URL.
+    Url {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Empty a project's dev database (keeps its URL).
+    Reset {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Open psql on a deployed app's database (on the hedgehog Mac), or with
+    /// --dev on a project's dev database.
+    Psql {
+        app: Option<String>,
+        #[arg(long)]
+        dev: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -171,6 +219,12 @@ enum DaemonAction {
 }
 
 fn main() -> ExitCode {
+    // Exit quietly when piped into something like `head` that stops reading,
+    // instead of panicking on a broken pipe.
+    // SAFETY: called before any threads start; SIG_DFL is always valid.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     // OpenTunnel (and our HTTP client) use rustls with the ring provider.
     let _ = rustls::crypto::ring::default_provider().install_default();

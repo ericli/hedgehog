@@ -44,6 +44,11 @@ impl Paths {
         self.state.join("state.db")
     }
 
+    /// Settings for the local dev Postgres (`hedgehog db up`).
+    pub fn dev_database(&self) -> PathBuf {
+        self.state.join("dev.db")
+    }
+
     pub fn token(&self) -> PathBuf {
         self.state.join("token")
     }

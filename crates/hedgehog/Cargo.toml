@@ -20,6 +20,7 @@ dotenvy.workspace = true
 flate2.workspace = true
 futures-util.workspace = true
 ignore.workspace = true
+libc.workspace = true
 qrcode.workspace = true
 reqwest.workspace = true
 rustls.workspace = true

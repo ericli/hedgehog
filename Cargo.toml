@@ -26,6 +26,7 @@ hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1", "client-legacy", "server"] }
+libc = "0.2"
 ignore = "0.4"
 opentunnel = "=0.5.1"
 qrcode = { version = "0.14", default-features = false }

@@ -93,6 +93,24 @@ Env is layered, last wins: the app folder's `.env` → the variables above → `
 
 Databases are dumped nightly to `~/Library/Application Support/hedgehog/backups/<app>/`, keeping the last 7.
 
+## A dev database on your laptop
+
+To work on an app locally against the same Postgres it gets when deployed, you don't need a daemon, only Docker:
+
+```sh
+hedgehog db up        # dev Postgres on localhost:5432; it starts whenever Docker does
+cd ~/code/budget
+hedgehog db init      # creates the `budget` database and adds DATABASE_URL to .env
+bun dev               # or whatever runs your app; it reads .env as usual
+```
+
+- **Same setup as deployed:** it's the same Postgres image as the hedgehog Mac, with one database and role per app, named the way `hedgehog deploy` would name the app.
+- **Your `.env` is safe:** `db init` won't overwrite a `DATABASE_URL` that points somewhere else unless you pass `--force`.
+- **No leaks into deploys:** a deployed app always gets its own `DATABASE_URL` from hedgehog, so the local one never applies there.
+- **Other commands:** `hedgehog db url` prints the URL, and `hedgehog db reset` empties the database but keeps its URL.
+- **Port and data:** `hedgehog db up --port 5433` moves it off a busy port, and `db init` updates `.env` to match. `hedgehog db down` stops it and keeps the data.
+- **psql:** `hedgehog db psql --dev` opens psql on the project's dev database.
+
 ## `hedgehog.toml` (optional)
 
 ```toml
@@ -122,7 +140,9 @@ hedgehog rm <app> [--purge]       folder goes to the Trash; --purge also drops d
 hedgehog open <app>
 hedgehog public <app> on|off
 hedgehog pair / devices [revoke <id>]
-hedgehog db <app>                 psql into the app's database (on the hedgehog Mac)
+hedgehog db up|down [--port N]    dev Postgres on localhost (no daemon needed)
+hedgehog db init|url|reset        a project's dev database and its DATABASE_URL in .env
+hedgehog db psql <app> | --dev    psql into a deployed app's database, or the dev one
 hedgehog status / doctor
 hedgehog token / remote add|ls|use|rm
 hedgehog daemon run|install|uninstall|logs

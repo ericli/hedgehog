@@ -288,6 +288,21 @@ impl Docker {
         Ok(port)
     }
 
+    /// The host port a container's first port binding asked for, whether or
+    /// not it is running.
+    pub async fn published_port(&self, container: &str) -> Result<Option<u16>> {
+        let info = self.api.inspect_container(container, None).await?;
+        let port = info
+            .host_config
+            .and_then(|config| config.port_bindings)
+            .into_iter()
+            .flat_map(|ports| ports.into_values())
+            .flatten()
+            .flatten()
+            .find_map(|binding| binding.host_port.and_then(|port| port.parse().ok()));
+        Ok(port)
+    }
+
     pub async fn start(&self, container: &str) -> Result<()> {
         self.api
             .start_container(container, None)

@@ -85,7 +85,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         Command::Pair { label } => pair(&client()?, label).await,
         Command::Devices { action } => devices(&client()?, action).await,
-        Command::Db { app } => db(&client()?, &app),
+        Command::Db { action } => crate::db::run(&paths, remote, action).await,
         Command::Status => status(&client()?).await,
         Command::Doctor => doctor(&paths, remote).await,
         Command::Token => token(&paths).await,
@@ -102,7 +102,12 @@ fn human_size(bytes: usize) -> String {
     }
 }
 
-async fn deploy(client: &Client, path: Option<PathBuf>, name: Option<String>) -> Result<()> {
+/// A project folder (default: the current one), its manifest, and its app
+/// name: `--name`, then `name` in hedgehog.toml, then the folder name.
+pub(crate) fn resolve_app(
+    path: Option<PathBuf>,
+    name: Option<String>,
+) -> Result<(PathBuf, Manifest, String)> {
     let dir = match path {
         Some(path) => path,
         None => std::env::current_dir()?,
@@ -124,6 +129,11 @@ async fn deploy(client: &Client, path: Option<PathBuf>, name: Option<String>) ->
         None => app_name_from_dir(&folder)
             .with_context(|| format!("can't make an app name from `{folder}`; pass --name"))?,
     };
+    Ok((dir, manifest, name))
+}
+
+async fn deploy(client: &Client, path: Option<PathBuf>, name: Option<String>) -> Result<()> {
+    let (dir, _, name) = resolve_app(path, name)?;
 
     let packing_dir = dir.clone();
     let packed = tokio::task::spawn_blocking(move || pack(&packing_dir)).await??;
@@ -311,7 +321,7 @@ async fn env(client: &Client, app: &str, action: Option<EnvAction>) -> Result<()
     Ok(())
 }
 
-fn confirm(question: &str) -> Result<bool> {
+pub(crate) fn confirm(question: &str) -> Result<bool> {
     print!("{question} [y/N] ");
     std::io::stdout().flush()?;
     let mut answer = String::new();
@@ -414,20 +424,6 @@ async fn devices(client: &Client, action: Option<DevicesAction>) -> Result<()> {
             device.id,
             device.label.as_deref().unwrap_or("(no label)")
         );
-    }
-    Ok(())
-}
-
-fn db(client: &Client, app: &str) -> Result<()> {
-    if !client.local {
-        bail!("`hedgehog db` opens psql through Docker, so run it on the hedgehog Mac itself");
-    }
-    let status = std::process::Command::new("docker")
-        .args(["exec", "-it", "hedgehog-postgres", "psql", "-U", app, app])
-        .status()
-        .context("could not run docker")?;
-    if !status.success() {
-        bail!("psql exited with {status}");
     }
     Ok(())
 }
