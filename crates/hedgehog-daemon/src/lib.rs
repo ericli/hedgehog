@@ -8,6 +8,8 @@ pub mod build;
 pub mod deploy;
 pub mod docker;
 pub mod gateway;
+pub mod git;
+pub mod hooks;
 pub mod launchd;
 mod pages;
 pub mod postgres;
@@ -17,7 +19,7 @@ pub mod supervise;
 pub mod tunnel;
 pub mod upload;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -55,6 +57,8 @@ pub struct Daemon {
     pub tunnel: TunnelManager,
     pub token: auth::ApiToken,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Apps with a webhook-triggered deploy waiting to start.
+    pending_pulls: Mutex<HashSet<String>>,
 }
 
 impl Daemon {
@@ -142,10 +146,12 @@ pub async fn run(paths: Paths, options: Options) -> Result<()> {
         gateway,
         token,
         locks: Mutex::default(),
+        pending_pulls: Mutex::default(),
     });
     daemon.gateway.set_api(
         api::dashboard_router(daemon.clone()),
         api::router(daemon.clone()),
+        hooks::router(daemon.clone()),
     );
     info!(apps = %daemon.paths.apps.display(), "hedgehog {VERSION} starting");
 

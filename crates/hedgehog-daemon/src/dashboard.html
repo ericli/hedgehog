@@ -45,8 +45,8 @@ h2 { font-size: 15px; font-weight: 650; text-transform: uppercase; letter-spacin
 code { font-family: var(--mono); font-size: .9em; background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; }
 
 /* App cards */
-.apps { display: grid; gap: 10px; }
-.app { display: block; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+.apps { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.app { display: block; width: 100%; min-width: 0; overflow: hidden; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 14px 16px; cursor: pointer; }
 .app:hover { border-color: var(--accent); }
 .app:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -140,6 +140,13 @@ input.mono { font-family: var(--mono); font-size: 14px; }
 .switch input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 14px; margin: 16px 0; }
 dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+.card { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.card h3 { margin: 0 0 6px; font-size: 15px; }
+.card ol { margin: 8px 0 0; padding-left: 20px; font-size: 14px; color: var(--muted); }
+.card ol li { margin-bottom: 4px; }
+.copy-row { display: flex; gap: 6px; margin-top: 8px; }
+.copy-row input { flex: 1; min-width: 0; }
+.copy-row label { font-size: 13px; color: var(--muted); min-width: 80px; align-self: center; }
 .danger-zone { margin-top: 24px; padding: 14px; border: 1px solid var(--bad); border-radius: 10px; }
 .danger-zone h3 { margin: 0 0 6px; font-size: 15px; color: var(--bad); }
 .qr { background: #fff; border-radius: 12px; padding: 10px; width: fit-content; margin: 4px auto 14px; }
@@ -165,7 +172,10 @@ footer { margin-top: 36px; font-size: 13px; color: var(--muted); text-align: cen
 
 <main>
   <section>
-    <div class="section-head"><h2>Apps</h2><span class="muted small" id="app-summary"></span></div>
+    <div class="section-head">
+      <h2>Apps</h2>
+      <span class="row"><span class="muted small" id="app-summary"></span><button class="btn small" id="new-open">New app</button></span>
+    </div>
     <div class="apps" id="apps"><div class="empty">Loading…</div></div>
   </section>
 
@@ -239,6 +249,19 @@ footer { margin-top: 36px; font-size: 13px; color: var(--muted); text-align: cen
           <input type="checkbox" id="public-toggle">
         </label>
         <dl class="facts" id="facts"></dl>
+        <div class="card" id="hook-card" hidden>
+          <h3>Deploy on push</h3>
+          <p class="small muted" style="margin:0" id="hook-intro"></p>
+          <div class="copy-row"><label>Payload URL</label><input type="text" class="mono" id="hook-url" readonly><button class="btn small" data-copy="hook-url">Copy</button></div>
+          <div class="copy-row"><label>Secret</label><input type="password" class="mono" id="hook-secret" readonly><button class="btn small" id="hook-show">Show</button><button class="btn small" data-copy="hook-secret">Copy</button></div>
+          <ol>
+            <li>On GitHub, open the repo's <strong>Settings → Webhooks → Add webhook</strong>.</li>
+            <li>Paste the payload URL and secret, and set the content type to <code>application/json</code>.</li>
+            <li>Keep <strong>Just the push event</strong>, and save. GitHub sends a test ping right away.</li>
+          </ol>
+          <div class="notice" id="hook-notice" hidden></div>
+          <button class="btn small" id="hook-rotate" style="margin-top:10px">New secret</button>
+        </div>
         <div class="danger-zone">
           <h3>Remove this app</h3>
           <p class="small muted" style="margin:0 0 10px">Stops it and moves its folder to the Trash. Its data and database are kept unless you tick the box.</p>
@@ -249,6 +272,34 @@ footer { margin-top: 36px; font-size: 13px; color: var(--muted); text-align: cen
             <input type="text" id="remove-confirm" placeholder="Type the app name to confirm" autocomplete="off" autocapitalize="off" spellcheck="false">
             <button class="btn danger solid" id="remove-go" disabled>Remove</button>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="new-dialog" aria-labelledby="new-title">
+  <div class="sheet">
+    <div class="sheet-head">
+      <span class="name" id="new-title" style="flex:1">New app from Git</span>
+      <button class="btn icon" id="new-close" aria-label="Close">✕</button>
+    </div>
+    <div class="sheet-body">
+      <form id="new-form">
+        <label class="field"><span>Repository</span>
+          <input type="text" class="mono" id="new-url" placeholder="https://github.com/you/repo" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+        <label class="field"><span>App name</span>
+          <input type="text" id="new-name" placeholder="from the repo name" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <label class="field"><span>Branch <span class="muted">(optional)</span></span>
+          <input type="text" class="mono" id="new-branch" placeholder="the repo's default branch" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <p class="small muted">hedgehog clones it on your Mac, builds it, and puts it live. Private repos need the Mac to have access, e.g. an SSH key or <code>gh auth login</code>.</p>
+        <button class="btn primary" type="submit" style="width:100%">Create app</button>
+      </form>
+      <div id="new-progress" hidden>
+        <pre class="console" id="new-output"></pre>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn primary" id="new-view" hidden>View app</button>
+          <button class="btn" id="new-again" hidden>Back</button>
         </div>
       </div>
     </div>
@@ -433,14 +484,20 @@ function renderFooter() {
   $("footer").textContent = parts.join(" · ");
 }
 
+// The tunnel reconnects for a few seconds when an app is added or removed,
+// so one failed refresh is normal; only say something if it keeps failing.
+let refreshFailures = 0;
+
 async function refresh() {
   try {
     const [status, apps, devices] = await Promise.all([getJson("/status"), getJson("/apps"), getJson("/devices")]);
     Object.assign(state, { status, apps, devices });
+    refreshFailures = 0;
     renderTunnel(); renderApps(); renderDevices(); renderFooter();
     if (state.selected) renderAppHeader();
   } catch (error) {
-    if (error.message !== "not paired") toast(`Couldn't refresh: ${error.message}`);
+    refreshFailures += 1;
+    if (error.message !== "not paired" && refreshFailures >= 2) toast(`Couldn't refresh: ${error.message}`);
   }
 }
 
@@ -516,6 +573,7 @@ function selectTab(name) {
   if (name === "logs") startLogs();
   if (name === "build") loadBuildLog();
   if (name === "env") loadEnv();
+  if (name === "settings") loadWebhook();
 }
 
 function appendConsole(pre, text, cls) {
@@ -523,6 +581,21 @@ function appendConsole(pre, text, cls) {
   pre.append(el("span", { class: cls, text: text + "\n" }));
   while (pre.childNodes.length > 2000) pre.firstChild.remove();
   if (atBottom) pre.scrollTop = pre.scrollHeight;
+}
+
+/* Renders a deploy's NDJSON stream into a console; returns the final event. */
+async function streamDeploy(response, out) {
+  let last = null;
+  await readLines(response, (line) => {
+    let event;
+    try { event = JSON.parse(line); } catch { return; }
+    last = event;
+    if (event.type === "step") appendConsole(out, `▸ ${event.message}`, "step");
+    else if (event.type === "log") appendConsole(out, event.line, "log");
+    else if (event.type === "done") appendConsole(out, `✓ Live${event.url ? " at " + event.url : ""}`, "done");
+    else if (event.type === "failed") appendConsole(out, `✗ ${event.error}`, "fail");
+  });
+  return last;
 }
 
 async function runAction(button, method, path, label) {
@@ -537,14 +610,10 @@ async function runAction(button, method, path, label) {
   appendConsole(out, `${label} ${name}…`, "step");
   try {
     const response = await call(method, `/apps/${encodeURIComponent(name)}/${path}`);
-    await readLines(response, (line) => {
-      let event;
-      try { event = JSON.parse(line); } catch { return; }
-      if (event.type === "step") appendConsole(out, `▸ ${event.message}`, "step");
-      else if (event.type === "log") appendConsole(out, event.line, "log");
-      else if (event.type === "done") appendConsole(out, `✓ Live${event.url ? " at " + event.url : ""}`, "done");
-      else if (event.type === "failed") appendConsole(out, `✗ ${event.error}`, "fail");
-    });
+    const last = await streamDeploy(response, out);
+    if (!last || (last.type !== "done" && last.type !== "failed")) {
+      appendConsole(out, "The connection dropped; the deploy carries on. The status above updates when it's done.", "log");
+    }
   } catch (error) {
     appendConsole(out, `✗ ${error.message}`, "fail");
   } finally {
@@ -728,6 +797,103 @@ async function removeApp() {
   }
 }
 
+/* Deploy on push */
+async function loadWebhook() {
+  const app = selectedApp();
+  const card = $("hook-card");
+  card.hidden = !app?.git;
+  if (!app?.git) return;
+  $("hook-notice").hidden = true;
+  try {
+    showWebhook(await getJson(`/apps/${encodeURIComponent(app.name)}/webhook`));
+  } catch (error) {
+    $("hook-intro").textContent = error.message;
+  }
+}
+
+function showWebhook(info) {
+  $("hook-intro").textContent = `GitHub calls hedgehog on every push; pushes to ${info.branch || "the checked-out branch"} pull and deploy this app.`;
+  $("hook-url").value = info.url;
+  $("hook-secret").value = info.secret;
+  $("hook-secret").type = "password";
+  $("hook-show").textContent = "Show";
+  if (info.url.startsWith("http://127.0.0.1")) {
+    $("hook-notice").className = "notice bad";
+    $("hook-notice").textContent = "The tunnel is off, so GitHub can't reach this Mac yet.";
+    $("hook-notice").hidden = false;
+  }
+}
+
+async function rotateWebhook() {
+  const app = selectedApp();
+  if (!confirm("Make a new secret? GitHub's webhook stops working until you paste the new one there.")) return;
+  try {
+    const response = await call("POST", `/apps/${encodeURIComponent(app.name)}/webhook/rotate`);
+    showWebhook(await response.json());
+    $("hook-notice").className = "notice ok";
+    $("hook-notice").textContent = "New secret made. Paste it into the webhook's settings on GitHub.";
+    $("hook-notice").hidden = false;
+  } catch (error) { toast(error.message); }
+}
+
+async function copyField(id) {
+  try {
+    await navigator.clipboard.writeText($(id).value);
+    toast("Copied");
+  } catch {
+    $(id).select();
+  }
+}
+
+/* New app */
+function repoName(url) {
+  const trimmed = url.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+  const last = trimmed.split(/[/:]/).pop() || "";
+  return last.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
+}
+
+function openNew() {
+  $("new-form").hidden = false;
+  $("new-progress").hidden = true;
+  $("new-form").reset();
+  $("new-name").placeholder = "from the repo name";
+  $("new-dialog").showModal();
+  $("new-url").focus();
+}
+
+async function createApp(event) {
+  event.preventDefault();
+  const url = $("new-url").value.trim();
+  const name = $("new-name").value.trim() || repoName(url);
+  if (!name) { toast("Pick an app name"); return; }
+  const branch = $("new-branch").value.trim() || null;
+  $("new-form").hidden = true;
+  $("new-progress").hidden = false;
+  $("new-view").hidden = true;
+  $("new-again").hidden = true;
+  const out = $("new-output");
+  out.replaceChildren();
+  appendConsole(out, `Creating ${name}…`, "step");
+  state.busy = true;
+  let last = null;
+  try {
+    const response = await call("POST", "/apps", { git_url: url, name, branch });
+    last = await streamDeploy(response, out);
+    if (!last || (last.type !== "done" && last.type !== "failed")) {
+      appendConsole(out, "The connection dropped; the deploy carries on. Watch it in the app list.", "log");
+    }
+  } catch (error) {
+    appendConsole(out, `✗ ${error.message}`, "fail");
+  } finally {
+    state.busy = false;
+    await refresh();
+  }
+  const exists = state.apps.some((app) => app.name === name);
+  $("new-view").hidden = !exists;
+  $("new-view").onclick = () => { $("new-dialog").close(); openApp(name); };
+  $("new-again").hidden = exists && last?.type === "done";
+}
+
 /* ---------- Pairing ---------- */
 
 function openPair() {
@@ -790,6 +956,18 @@ $("pair-close").addEventListener("click", () => $("pair-dialog").close());
 $("pair-form").addEventListener("submit", createPair);
 $("pair-copy").addEventListener("click", copyPairLink);
 $("pair-again").addEventListener("click", openPair);
+$("new-open").addEventListener("click", openNew);
+$("new-close").addEventListener("click", () => $("new-dialog").close());
+$("new-form").addEventListener("submit", createApp);
+$("new-again").addEventListener("click", () => { $("new-form").hidden = false; $("new-progress").hidden = true; });
+$("new-url").addEventListener("input", () => { $("new-name").placeholder = repoName($("new-url").value) || "from the repo name"; });
+$("hook-rotate").addEventListener("click", rotateWebhook);
+$("hook-show").addEventListener("click", () => {
+  const hidden = $("hook-secret").type === "password";
+  $("hook-secret").type = hidden ? "text" : "password";
+  $("hook-show").textContent = hidden ? "Hide" : "Show";
+});
+for (const button of document.querySelectorAll("[data-copy]")) button.addEventListener("click", () => copyField(button.dataset.copy));
 
 refresh();
 setInterval(() => { if (document.visibilityState === "visible" && !state.busy) refresh(); }, 5000);

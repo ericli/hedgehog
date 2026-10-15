@@ -115,22 +115,36 @@ impl Client {
         path: &str,
         build: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
     ) -> Result<Response> {
-        let request = build(
+        // Reads are safe to repeat, so they ride out a dropped connection
+        // (the tunnel reconnects for a few seconds when an app is added or
+        // removed). Anything that changes state is sent once.
+        let mut attempts_left = if method == Method::GET { 3 } else { 1 };
+        let mut request = build(
             self.http
                 .request(method, self.url(path))
                 .bearer_auth(&self.token),
         );
-        let response = request.send().await.map_err(|error| {
-            if error.is_connect() || error.is_timeout() {
-                anyhow!(
+        let response = loop {
+            let spare = (attempts_left > 1).then(|| request.try_clone()).flatten();
+            match request.send().await {
+                Ok(response) => break response,
+                Err(error) if spare.is_some() && !error.is_status() => {
+                    attempts_left -= 1;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    request = spare.unwrap();
+                }
+                Err(error) if error.is_connect() || error.is_timeout() => bail!(
                     "could not reach hedgehog on {} ({}). Is the daemon running? Try `hedgehog status`",
                     self.label,
                     self.base
-                )
-            } else {
-                anyhow!(error)
+                ),
+                Err(error) => {
+                    return Err(anyhow!(error).context(
+                        "lost the connection to hedgehog. If an app was just added or removed, the tunnel is reconnecting; try again in a few seconds",
+                    ));
+                }
             }
-        })?;
+        };
         if response.status().is_success() {
             return Ok(response);
         }

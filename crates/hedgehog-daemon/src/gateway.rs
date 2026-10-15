@@ -50,6 +50,8 @@ struct ApiRouters {
     dashboard: axum::Router,
     /// For the CLI; checks the bearer token itself.
     cli: axum::Router,
+    /// Push webhooks; each call is checked against its app's secret.
+    hooks: axum::Router,
 }
 
 /// The paired device making a dashboard API request; handlers can read it.
@@ -126,8 +128,12 @@ impl Gateway {
     /// devices under [`API_PREFIX`], and `cli` (which checks the bearer token)
     /// at `/v1/...` for requests carrying a token, so the CLI can reach this
     /// Mac through the tunnel.
-    pub fn set_api(&self, dashboard: axum::Router, cli: axum::Router) {
-        let _ = self.inner.api.set(ApiRouters { dashboard, cli });
+    pub fn set_api(&self, dashboard: axum::Router, cli: axum::Router, hooks: axum::Router) {
+        let _ = self.inner.api.set(ApiRouters {
+            dashboard,
+            cli,
+            hooks,
+        });
     }
 
     pub fn set_hostname(&self, hostname: Option<String>) {
@@ -319,6 +325,15 @@ async fn handle_home(inner: &Inner, request: Request<Incoming>) -> Response<Body
     }
     if path.starts_with("/v1/") && request.headers().contains_key(header::AUTHORIZATION) {
         return cli_api(inner, request).await;
+    }
+    if path.starts_with("/_hedgehog/hooks/") {
+        let Some(router) = inner.api.get().map(|api| api.hooks.clone()) else {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "hedgehog is still starting",
+            );
+        };
+        return call_api(router, request).await;
     }
     if path != "/" {
         return html(StatusCode::NOT_FOUND, pages::wall());
@@ -874,6 +889,7 @@ mod tests {
                 ),
             ),
             axum::Router::new(),
+            axum::Router::new(),
         );
         let home = gateway.home_port();
         let admin = pair_device(&gateway, &store, "admin-code", true).await;
@@ -942,7 +958,7 @@ mod tests {
                 )
             }),
         );
-        gateway.set_api(axum::Router::new(), cli);
+        gateway.set_api(axum::Router::new(), cli, axum::Router::new());
         let upstream = echo_upstream().await;
         let app_port = gateway
             .set_app(

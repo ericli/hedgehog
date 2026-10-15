@@ -3,7 +3,7 @@
 //! A failed deploy never takes down what was already running.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,7 @@ use crate::Daemon;
 use crate::build::{self, builder_name};
 use crate::docker::{self, ContainerState, RunSpec};
 use crate::gateway::Upstream;
+use crate::git;
 use crate::secrets::{now, random_token};
 use crate::store::{AppRecord, Deployed};
 
@@ -35,6 +36,8 @@ pub enum Source {
     Upload(PathBuf),
     /// `git pull` in the folder first.
     Pull,
+    /// Clone a Git repository as the app's folder first.
+    Clone { url: String, branch: Option<String> },
 }
 
 fn step(events: &Events, message: impl Into<String>) {
@@ -45,24 +48,6 @@ fn step(events: &Events, message: impl Into<String>) {
 
 fn new_deploy_id() -> String {
     format!("{:x}{}", now(), random_token(2))
-}
-
-/// The commit an app folder is at, if it is a git repo.
-pub async fn git_revision(dir: &Path) -> Option<String> {
-    if !dir.join(".git").exists() {
-        return None;
-    }
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .await
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// True once something on `port` answers like an HTTP server. Any status
@@ -163,6 +148,16 @@ impl Daemon {
             crate::upload::replace_folder(&self.paths, archive, &dir)?;
             self.store.upsert_app(app, &dir)?;
         }
+        if let Source::Clone { url, branch } = &source {
+            step(events, format!("cloning {url}"));
+            let dir = self.paths.app_source(app);
+            let log_events = events.clone();
+            let log = move |line: String| {
+                let _ = log_events.send(DeployEvent::Log { line });
+            };
+            git::clone(url, branch.as_deref(), &self.paths.incoming(), &dir, &log).await?;
+            self.store.upsert_app(app, &dir)?;
+        }
         let record = self.record(app)?;
         let dir = record.source_dir.clone();
         if !dir.is_dir() {
@@ -174,7 +169,7 @@ impl Daemon {
             let log = move |line: String| {
                 let _ = log_events.send(DeployEvent::Log { line });
             };
-            build::git_pull(&dir, &log).await?;
+            git::pull(&dir, &log).await?;
         }
         let manifest = Manifest::load(&dir)?;
         self.store.set_status(app, AppStatus::Building, None)?;
@@ -182,7 +177,7 @@ impl Daemon {
 
         let deploy_id = new_deploy_id();
         let image = docker::image_name(app, &deploy_id);
-        let revision = git_revision(&dir).await;
+        let revision = git::revision(&dir).await;
         let builder = manifest.builder(&dir);
         step(
             events,
@@ -413,6 +408,7 @@ impl Daemon {
         self.gateway.remove_app(app);
         self.sync_routes_soon();
         self.store.delete_app(app)?;
+        self.store.delete_setting(&crate::hooks::secret_key(app))?;
         if record.source_dir.starts_with(&self.paths.apps) && record.source_dir.exists() {
             let trashed = crate::upload::move_to_trash(&self.paths, &record.source_dir)?;
             info!(app, to = %trashed.display(), "moved app folder to the Trash");
@@ -433,24 +429,30 @@ impl Daemon {
         let daemon = self.clone();
         tokio::spawn(async move {
             info!(app, why, "deploying");
-            let (events, mut rx) = mpsc::unbounded_channel();
-            let name = app.clone();
-            tokio::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        DeployEvent::Step { message } => info!(app = name, "{message}"),
-                        DeployEvent::Log { line } => debug!(app = name, "{line}"),
-                        DeployEvent::Done { url } => {
-                            info!(app = name, url = url.unwrap_or_default(), "deployed")
-                        }
-                        DeployEvent::Failed { error } => {
-                            warn!(app = name, "deploy failed: {error}")
-                        }
-                    }
-                }
-            });
+            let events = daemon.log_events(&app);
             let _ = daemon.deploy(&app, source, events).await;
         });
+    }
+
+    /// An event sink for background deploys that writes to the daemon log.
+    pub fn log_events(&self, app: &str) -> Events {
+        let (events, mut rx) = mpsc::unbounded_channel();
+        let name = app.to_string();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    DeployEvent::Step { message } => info!(app = name, "{message}"),
+                    DeployEvent::Log { line } => debug!(app = name, "{line}"),
+                    DeployEvent::Done { url } => {
+                        info!(app = name, url = url.unwrap_or_default(), "deployed")
+                    }
+                    DeployEvent::Failed { error } => {
+                        warn!(app = name, "deploy failed: {error}")
+                    }
+                }
+            }
+        });
+        events
     }
 
     pub fn spawn_restart(self: &Arc<Self>, app: String) {

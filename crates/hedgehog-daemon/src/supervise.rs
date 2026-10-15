@@ -14,9 +14,10 @@ use hedgehog_core::names::app_name_from_dir;
 use tracing::{info, warn};
 
 use crate::Daemon;
-use crate::deploy::{Source, git_revision};
+use crate::deploy::Source;
 use crate::docker::ContainerState;
 use crate::gateway::Upstream;
+use crate::git::revision as git_revision;
 use crate::secrets::now;
 use crate::store::AppRecord;
 

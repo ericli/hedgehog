@@ -17,7 +17,8 @@ use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use futures_util::StreamExt;
 use hedgehog_core::api::{
-    AppInfo, DeployEvent, EnvUpdate, ErrorBody, PairRequest, PairResponse, PublicUpdate, Status,
+    AppInfo, CreateApp, DeployEvent, EnvUpdate, ErrorBody, PairRequest, PairResponse, PublicUpdate,
+    Status, WebhookInfo,
 };
 use hedgehog_core::names::is_valid_app_name;
 use hedgehog_core::{API_PORT, Manifest};
@@ -84,13 +85,15 @@ pub fn dashboard_router(daemon: AppState) -> Router {
 fn routes(daemon: AppState) -> Router<()> {
     Router::new()
         .route("/v1/status", get(status))
-        .route("/v1/apps", get(list_apps))
+        .route("/v1/apps", get(list_apps).post(create_app))
         .route(
             "/v1/apps/{name}/deploy",
             post(deploy).layer(DefaultBodyLimit::disable()),
         )
         .route("/v1/apps/{name}/restart", post(restart))
         .route("/v1/apps/{name}/pull", post(pull))
+        .route("/v1/apps/{name}/webhook", get(webhook))
+        .route("/v1/apps/{name}/webhook/rotate", post(rotate_webhook))
         .route("/v1/apps/{name}/stop", post(stop))
         .route("/v1/apps/{name}", delete(remove))
         .route("/v1/apps/{name}/logs", get(logs))
@@ -308,6 +311,78 @@ async fn restart(State(daemon): State<AppState>, Path(name): Path<String>) -> Ap
         let _ = daemon.restart(&name, events).await;
     });
     Ok(event_stream(rx))
+}
+
+/// Creates an app by cloning a Git repository on this Mac, then deploys it.
+async fn create_app(
+    State(daemon): State<AppState>,
+    Json(request): Json<CreateApp>,
+) -> ApiResult<Response> {
+    let name = request.name.trim().to_string();
+    let url = request.git_url.trim().to_string();
+    if !is_valid_app_name(&name) {
+        return Err(bad_request(format!(
+            "`{name}` isn't a valid app name: use lowercase letters, digits, and dashes"
+        )));
+    }
+    crate::git::validate_url(&url).map_err(bad_request)?;
+    let branch = request
+        .branch
+        .map(|branch| branch.trim().to_string())
+        .filter(|branch| !branch.is_empty());
+    if let Some(branch) = &branch {
+        crate::git::validate_branch(branch).map_err(bad_request)?;
+    }
+    if daemon.store.app(&name)?.is_some() || daemon.paths.app_source(&name).exists() {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            format!("there's already an app (or a folder) called {name}"),
+        ));
+    }
+    let (events, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let _ = daemon
+            .deploy(&name, Source::Clone { url, branch }, events)
+            .await;
+    });
+    Ok(event_stream(rx))
+}
+
+async fn webhook_info(daemon: &Daemon, app: &AppRecord, secret: String) -> ApiResult<WebhookInfo> {
+    let branch = crate::git::current_branch(&app.source_dir).await;
+    if branch.is_none() {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            format!(
+                "{} isn't a git clone on a branch, so there's nothing to deploy on push",
+                app.name
+            ),
+        ));
+    }
+    Ok(WebhookInfo {
+        url: crate::hooks::url(daemon, &app.name),
+        secret,
+        branch,
+    })
+}
+
+/// The app's push-webhook URL and secret (created on first request).
+async fn webhook(
+    State(daemon): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<WebhookInfo>> {
+    let app = record(&daemon, &name)?;
+    let secret = crate::hooks::secret(&daemon, &name)?;
+    Ok(Json(webhook_info(&daemon, &app, secret).await?))
+}
+
+async fn rotate_webhook(
+    State(daemon): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<WebhookInfo>> {
+    let app = record(&daemon, &name)?;
+    let secret = crate::hooks::rotate_secret(&daemon, &name)?;
+    Ok(Json(webhook_info(&daemon, &app, secret).await?))
 }
 
 /// `git pull` in the app's folder, then deploy. For apps that are git clones.

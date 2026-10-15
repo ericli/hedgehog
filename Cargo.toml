@@ -23,6 +23,7 @@ dotenvy = "0.15"
 flate2 = "1"
 futures-util = "0.3"
 hex = "0.4"
+hmac = "0.13"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1", "client-legacy", "server"] }

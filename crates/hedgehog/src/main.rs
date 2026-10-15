@@ -40,6 +40,24 @@ enum Command {
     },
     /// Rebuild an app from the folder already on the hedgehog Mac.
     Redeploy { app: String },
+    /// Create an app by cloning a Git repository on the hedgehog Mac.
+    New {
+        /// https://github.com/you/repo, git@github.com:you/repo, or a path on the Mac.
+        git_url: String,
+        /// App name. Defaults to the repository's name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Branch to deploy. Defaults to the repository's default branch.
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Show how to make GitHub deploy an app on every push.
+    Webhook {
+        app: String,
+        /// Replace the webhook secret (update it in GitHub afterwards).
+        #[arg(long)]
+        rotate: bool,
+    },
     /// List apps.
     #[command(alias = "list")]
     Ls,

@@ -5,11 +5,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use hedgehog_core::api::{
-    AppInfo, AppStatus, DeployEvent, DeviceInfo, EnvUpdate, PairRequest, PairResponse,
-    PublicUpdate, Status,
+    AppInfo, AppStatus, CreateApp, DeployEvent, DeviceInfo, EnvUpdate, PairRequest, PairResponse,
+    PublicUpdate, Status, WebhookInfo,
 };
 use hedgehog_core::env::{EnvMap, read_dotenv_file};
-use hedgehog_core::names::{app_name_from_dir, is_valid_app_name};
+use hedgehog_core::names::{app_name_from_dir, is_valid_app_name, repo_name_from_git_url};
 use hedgehog_core::{API_PORT, Manifest, Paths};
 use reqwest::Method;
 
@@ -44,6 +44,12 @@ pub async fn run(cli: Cli) -> Result<()> {
                 .await?;
             follow_events(&client, &app, response).await
         }
+        Command::New {
+            git_url,
+            name,
+            branch,
+        } => new_app(&client()?, git_url, name, branch).await,
+        Command::Webhook { app, rotate } => webhook(&client()?, &app, rotate).await,
         Command::Ls => list(&client()?).await,
         Command::Logs {
             app,
@@ -166,6 +172,68 @@ async fn deploy(client: &Client, path: Option<PathBuf>, name: Option<String>) ->
         )
         .await?;
     follow_events(client, &name, response).await
+}
+
+async fn new_app(
+    client: &Client,
+    git_url: String,
+    name: Option<String>,
+    branch: Option<String>,
+) -> Result<()> {
+    let name = match name {
+        Some(name) => name,
+        None => repo_name_from_git_url(&git_url)
+            .and_then(app_name_from_dir)
+            .with_context(|| format!("can't make an app name from `{git_url}`; pass --name"))?,
+    };
+    println!(
+        "{} {name} from {git_url} on {}",
+        bold("Creating"),
+        client.label
+    );
+    let request = CreateApp {
+        git_url,
+        name: name.clone(),
+        branch,
+    };
+    let response = client.send(Method::POST, "/v1/apps", &request).await?;
+    follow_events(client, &name, response).await?;
+    println!(
+        "{}",
+        dim(&format!(
+            "To deploy on every push to GitHub, run `hedgehog webhook {name}`."
+        ))
+    );
+    Ok(())
+}
+
+async fn webhook(client: &Client, app: &str, rotate: bool) -> Result<()> {
+    let info: WebhookInfo = if rotate {
+        client
+            .send_empty(Method::POST, &format!("/v1/apps/{app}/webhook/rotate"))
+            .await?
+            .json()
+            .await?
+    } else {
+        client.get(&format!("/v1/apps/{app}/webhook")).await?
+    };
+    if rotate {
+        println!("{} New secret issued; update it in GitHub.\n", green("✓"));
+    }
+    let branch = info.branch.as_deref().unwrap_or("the checked-out branch");
+    println!("In your repository on GitHub: Settings → Webhooks → Add webhook\n");
+    println!("  Payload URL   {}", bold(&info.url));
+    println!("  Content type  application/json");
+    println!("  Secret        {}", info.secret);
+    println!("  Events        Just the push event\n");
+    println!("Pushes to {branch} will pull and deploy {app}. Other branches are ignored.");
+    if info.url.starts_with("http://127.0.0.1") {
+        println!(
+            "{}",
+            yellow("The tunnel is off, so GitHub can't reach this Mac yet.")
+        );
+    }
+    Ok(())
 }
 
 /// Prints a deploy's NDJSON progress stream until it finishes.

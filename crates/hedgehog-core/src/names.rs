@@ -40,9 +40,39 @@ pub fn app_name_from_dir(dir_name: &str) -> Option<String> {
     is_valid_app_name(&name).then_some(name)
 }
 
+/// The repository name in a Git URL: `budget` for
+/// `https://github.com/me/budget.git` or `git@github.com:me/budget`.
+pub fn repo_name_from_git_url(url: &str) -> Option<&str> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    let name = trimmed.rsplit(['/', ':']).next()?;
+    (!name.is_empty()).then_some(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_repos_from_git_urls() {
+        assert_eq!(
+            repo_name_from_git_url("https://github.com/me/budget.git"),
+            Some("budget")
+        );
+        assert_eq!(
+            repo_name_from_git_url("https://github.com/me/Budget-App/"),
+            Some("Budget-App")
+        );
+        assert_eq!(
+            repo_name_from_git_url("git@github.com:me/notes.git"),
+            Some("notes")
+        );
+        assert_eq!(
+            repo_name_from_git_url("/Users/me/code/thing"),
+            Some("thing")
+        );
+        assert_eq!(repo_name_from_git_url(""), None);
+    }
 
     #[test]
     fn validates_names() {

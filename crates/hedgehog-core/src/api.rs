@@ -128,6 +128,25 @@ pub struct DeviceInfo {
     pub current: bool,
 }
 
+/// Create an app by cloning a Git repository on the hedgehog Mac.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateApp {
+    pub git_url: String,
+    pub name: String,
+    /// Branch to clone and deploy. Defaults to the repository's default branch.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// Where GitHub should send push events for an app, and the secret it signs them with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookInfo {
+    pub url: String,
+    pub secret: String,
+    /// Pushes to this branch deploy; others are ignored.
+    pub branch: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,

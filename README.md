@@ -73,9 +73,28 @@ cd ~/code/budget && hedgehog deploy
 
 Folders that are git repos also redeploy on their own: `git pull` inside `~/Hedgehog/apps/<app>` and the new commit goes live a few seconds later.
 
-## Deploy on `git push` (GitHub Actions)
+## Deploy on `git push`
 
-The deploy API is plain HTTPS, so CI doesn't need the hedgehog binary. Add your hedgehog's home address and token as the repository secrets `HEDGEHOG_URL` and `HEDGEHOG_TOKEN`, then:
+### With a webhook (recommended)
+
+Create the app from its repository, so the Mac has a git clone it can pull:
+
+```sh
+hedgehog new https://github.com/you/budget     # or "New app" in the dashboard
+hedgehog webhook budget                        # or the app's Settings tab in the dashboard
+```
+
+`hedgehog webhook` prints a payload URL and a secret. In the repo on GitHub, open **Settings → Webhooks → Add webhook**, paste both, set the content type to `application/json`, and keep **Just the push event**. From then on, every push to the branch the app is on makes hedgehog pull and redeploy, usually within seconds.
+
+- **Every call is checked.** hedgehog verifies GitHub's signature on each webhook call and ignores pushes to other branches.
+- **Pushes during a deploy don't pile up.** At most one extra deploy is queued behind the running one.
+- **The secret can't do much.** It only tells hedgehog to pull what's already on GitHub and deploy it. It can't upload code, unlike the API token. `hedgehog webhook budget --rotate` replaces it.
+- **Missed pushes need a nudge.** If the Mac was offline during a push, GitHub doesn't retry; tap **Pull & redeploy** in the dashboard or run `hedgehog redeploy`.
+- **Private repos** need the Mac to be able to fetch without a prompt, e.g. with an SSH key or `gh auth login`.
+
+### With GitHub Actions
+
+This works without a clone on the Mac, because CI uploads the code itself. It needs your API token stored in GitHub. The deploy API is plain HTTPS, so CI doesn't need the hedgehog binary. Add your hedgehog's home address and token as the repository secrets `HEDGEHOG_URL` and `HEDGEHOG_TOKEN`, then:
 
 ```yaml
 # .github/workflows/deploy.yml
@@ -121,11 +140,13 @@ Your apps never see hedgehog's cookie, and they receive `X-Forwarded-Proto: http
 On an admin device, `https://<id>.opentunnel.xyz` (the address `hedgehog status` shows as "home") is a dashboard for your hedgehog. It works on a phone. From it you can:
 
 - see every app's status, URL, last deploy, and commit, and open it,
+- **create a new app from a Git URL**: hedgehog clones it on the Mac, builds it, and puts it live,
 - **redeploy**, **restart**, **stop**, or **start** an app, with build output streamed live,
 - **pull & redeploy** an app that's a git clone: hedgehog runs `git pull` in its folder on the Mac and deploys the new commit. This is how you ship from your phone after pushing to GitHub,
 - follow an app's logs and read its last build log,
 - add, change, or remove env vars (values stay hidden until you tap Show); saving restarts the app,
 - make an app public or private, or remove it,
+- get an app's **deploy-on-push** webhook (payload URL and secret) to paste into GitHub,
 - pair new devices with a QR code, and revoke old ones.
 
 The dashboard uses the same control API as the CLI, but logs in with your device cookie instead of the CLI token. Requests must come from the dashboard page itself, so a page on one of your apps (they share the `opentunnel.xyz` site) can't drive it with your cookie. For private repos, "pull" needs this Mac to fetch without a password prompt, e.g. with an SSH key.
@@ -183,6 +204,8 @@ NODE_ENV = "production"
 hedgehog setup                    set up this Mac (daemon at login, tunnel, pair your phone)
 hedgehog deploy [path]            upload a folder and deploy it
 hedgehog redeploy <app>           rebuild from the folder already on the hedgehog Mac
+hedgehog new <git-url>            clone a repo on the hedgehog Mac and deploy it (--name, --branch)
+hedgehog webhook <app> [--rotate] the GitHub webhook that deploys an app on every push
 hedgehog ls                       apps, status, URLs
 hedgehog logs <app> [-f] [--build]
 hedgehog env <app> [set K=V… | unset K… | import .env]
