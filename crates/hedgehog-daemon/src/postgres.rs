@@ -35,6 +35,9 @@ enum Flavor {
 pub struct Postgres {
     docker: Docker,
     flavor: Flavor,
+    /// Several deploys can need Postgres at once (e.g. at startup); only one
+    /// may create the container.
+    starting: tokio::sync::Mutex<()>,
 }
 
 /// Postgres identifiers are double-quoted so names with hyphens work. App
@@ -61,6 +64,7 @@ impl Postgres {
         Self {
             docker,
             flavor: Flavor::Shared,
+            starting: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -69,6 +73,7 @@ impl Postgres {
         Self {
             docker,
             flavor: Flavor::Dev { port },
+            starting: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -93,6 +98,7 @@ impl Postgres {
         store: &Store,
         log: &(dyn Fn(String) + Send + Sync),
     ) -> Result<()> {
+        let _starting = self.starting.lock().await;
         let container = self.container();
         let mut state = self.docker.state(container).await?;
         if let Flavor::Dev { port } = self.flavor
@@ -115,12 +121,25 @@ impl Postgres {
                 let options = CreateContainerOptionsBuilder::default()
                     .name(container)
                     .build();
-                self.docker
+                match self
+                    .docker
                     .api()
                     .create_container(Some(options), self.container_body(&password))
                     .await
-                    .context("could not create the Postgres container")?;
-                self.start(container).await?;
+                {
+                    // Something else (another hedgehog, or a CLI) just made it.
+                    Ok(_)
+                    | Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 409,
+                        ..
+                    }) => {}
+                    Err(error) => {
+                        return Err(error).context("could not create the Postgres container");
+                    }
+                }
+                if !self.is_running().await? {
+                    self.start(container).await?;
+                }
             }
         }
         self.wait_ready().await
