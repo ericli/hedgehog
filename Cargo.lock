@@ -793,6 +793,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "opentunnel",
+ "qrcode",
  "rand",
  "rusqlite",
  "serde",
@@ -803,6 +804,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tower",
  "tracing",
 ]
 

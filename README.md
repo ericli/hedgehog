@@ -31,7 +31,7 @@ curl -sSL https://railpack.com/install.sh | sh   # for apps without a Dockerfile
 hedgehog setup
 ```
 
-`setup` checks your tools, starts the daemon at login, connects the tunnel, and shows a QR code. Scan it with your phone to pair it.
+`setup` checks your tools, starts the daemon at login, connects the tunnel, and shows a QR code. Scan it with your phone to pair it. Your phone can then open your apps and manage them from the [dashboard](#the-dashboard).
 
 Then either drop a folder in:
 
@@ -73,11 +73,26 @@ Folders that are git repos also redeploy on their own: `git pull` inside `~/Hedg
 OpenTunnel URLs are on the public internet, so hedgehog puts a gateway in front of every app.
 
 - **Pair a device:** run `hedgehog pair` and open the link (or scan the QR code) on that device. Pairing sets a long-lived cookie for `<id>.opentunnel.xyz`, so one pairing covers every app.
+- **Admin devices:** `hedgehog pair --admin` also lets the device manage hedgehog from the dashboard. Plain pairing only opens apps, which keeps it safe to give to other people later.
 - **Unpaired visitors** see a "this is a private app" page.
 - **Make an app public:** `hedgehog public <app> on` lets anyone with its URL in, e.g. for webhooks or something you want to share.
-- **Manage devices:** `hedgehog devices` lists paired devices; `hedgehog devices revoke <id>` removes one.
+- **Manage devices:** `hedgehog devices` lists paired devices and what each can do; `hedgehog devices revoke <id>` removes one.
 
 Your apps never see hedgehog's cookie, and they receive `X-Forwarded-Proto: https` and `X-Forwarded-Host`.
+
+## The dashboard
+
+On an admin device, `https://<id>.opentunnel.xyz` (the address `hedgehog status` shows as "home") is a dashboard for your hedgehog. It works on a phone. From it you can:
+
+- see every app's status, URL, last deploy, and commit, and open it,
+- **redeploy**, **restart**, **stop**, or **start** an app, with build output streamed live,
+- **pull & redeploy** an app that's a git clone: hedgehog runs `git pull` in its folder on the Mac and deploys the new commit. This is how you ship from your phone after pushing to GitHub,
+- follow an app's logs and read its last build log,
+- add, change, or remove env vars (values stay hidden until you tap Show); saving restarts the app,
+- make an app public or private, or remove it,
+- pair new devices with a QR code, and revoke old ones.
+
+The dashboard uses the same control API as the CLI, but logs in with your device cookie instead of the CLI token. Requests must come from the dashboard page itself, so a page on one of your apps (they share the `opentunnel.xyz` site) can't drive it with your cookie. For private repos, "pull" needs this Mac to fetch without a password prompt, e.g. with an SSH key.
 
 ## What your app gets
 
@@ -139,7 +154,8 @@ hedgehog restart|start|stop <app>
 hedgehog rm <app> [--purge]       folder goes to the Trash; --purge also drops data and database
 hedgehog open <app>
 hedgehog public <app> on|off
-hedgehog pair / devices [revoke <id>]
+hedgehog pair [--admin]           pair a device (--admin: it can use the dashboard too)
+hedgehog devices [revoke <id>]
 hedgehog db up|down [--port N]    dev Postgres on localhost (no daemon needed)
 hedgehog db init|url|reset        a project's dev database and its DATABASE_URL in .env
 hedgehog db psql <app> | --dev    psql into a deployed app's database, or the dev one

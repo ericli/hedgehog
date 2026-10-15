@@ -87,6 +87,10 @@ enum Command {
         /// A name to recognise the device by later.
         #[arg(long)]
         label: Option<String>,
+        /// Also let the device manage hedgehog from the dashboard (deploy,
+        /// restart, env vars, devices), not just open apps.
+        #[arg(long)]
+        admin: bool,
     },
     /// List paired devices, or revoke one.
     Devices {

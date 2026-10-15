@@ -33,6 +33,8 @@ pub enum Source {
     Folder,
     /// Replace the folder with an uploaded `.tar.gz` first.
     Upload(PathBuf),
+    /// `git pull` in the folder first.
+    Pull,
 }
 
 fn step(events: &Events, message: impl Into<String>) {
@@ -153,16 +155,24 @@ impl Daemon {
         source: Source,
         events: &Events,
     ) -> Result<Option<String>> {
-        if let Source::Upload(archive) = source {
+        if let Source::Upload(archive) = &source {
             step(events, "unpacking upload");
             let dir = self.paths.app_source(app);
-            crate::upload::replace_folder(&self.paths, &archive, &dir)?;
+            crate::upload::replace_folder(&self.paths, archive, &dir)?;
             self.store.upsert_app(app, &dir)?;
         }
         let record = self.record(app)?;
         let dir = record.source_dir.clone();
         if !dir.is_dir() {
             bail!("{} no longer exists", dir.display());
+        }
+        if let Source::Pull = source {
+            step(events, "pulling the latest commits");
+            let log_events = events.clone();
+            let log = move |line: String| {
+                let _ = log_events.send(DeployEvent::Log { line });
+            };
+            build::git_pull(&dir, &log).await?;
         }
         let manifest = Manifest::load(&dir)?;
         self.store.set_status(app, AppStatus::Building, None)?;

@@ -11,7 +11,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::secrets::now;
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
     CREATE TABLE apps (
         name TEXT PRIMARY KEY,
         source_dir TEXT NOT NULL,
@@ -47,7 +48,12 @@ const MIGRATIONS: &[&str] = &[r#"
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
-"#];
+"#,
+    r#"
+    ALTER TABLE devices ADD COLUMN admin INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE pair_codes ADD COLUMN admin INTEGER NOT NULL DEFAULT 0;
+"#,
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppRecord {
@@ -292,33 +298,44 @@ impl Store {
 
     // Devices
 
-    pub fn add_device(&self, id: &str, label: Option<&str>, token_hash: &str) -> Result<()> {
+    pub fn add_device(&self, id: &str, grant: &PairGrant, token_hash: &str) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO devices (id, label, token_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![id, label, token_hash, now()],
+            "INSERT INTO devices (id, label, admin, token_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, grant.label, grant.admin, token_hash, now()],
         )?;
         Ok(())
     }
 
-    pub fn device_token_hashes(&self) -> Result<Vec<String>> {
+    /// Every paired device's token hash, id, and role, for the gateway.
+    pub fn device_auth(&self) -> Result<Vec<(String, DeviceAuth)>> {
         let conn = self.conn();
-        let mut statement = conn.prepare("SELECT token_hash FROM devices")?;
-        let hashes = statement
-            .query_map([], |row| row.get(0))?
+        let mut statement = conn.prepare("SELECT token_hash, id, admin FROM devices")?;
+        let devices = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    DeviceAuth {
+                        id: row.get(1)?,
+                        admin: row.get(2)?,
+                    },
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(hashes)
+        Ok(devices)
     }
 
     pub fn devices(&self) -> Result<Vec<DeviceInfo>> {
         let conn = self.conn();
         let mut statement =
-            conn.prepare("SELECT id, label, created_at FROM devices ORDER BY created_at")?;
+            conn.prepare("SELECT id, label, admin, created_at FROM devices ORDER BY created_at")?;
         let devices = statement
             .query_map([], |row| {
                 Ok(DeviceInfo {
                     id: row.get(0)?,
                     label: row.get(1)?,
-                    created_at: row.get(2)?,
+                    admin: row.get(2)?,
+                    created_at: row.get(3)?,
+                    current: false,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -335,33 +352,50 @@ impl Store {
 
     // Pairing codes
 
-    pub fn add_pair_code(
-        &self,
-        code_hash: &str,
-        label: Option<&str>,
-        expires_at: i64,
-    ) -> Result<()> {
+    pub fn add_pair_code(&self, code_hash: &str, grant: &PairGrant, expires_at: i64) -> Result<()> {
         let conn = self.conn();
         conn.execute("DELETE FROM pair_codes WHERE expires_at < ?1", [now()])?;
         conn.execute(
-            "INSERT INTO pair_codes (code_hash, label, expires_at) VALUES (?1, ?2, ?3)",
-            params![code_hash, label, expires_at],
+            "INSERT INTO pair_codes (code_hash, label, admin, expires_at) VALUES (?1, ?2, ?3, ?4)",
+            params![code_hash, grant.label, grant.admin, expires_at],
         )?;
         Ok(())
     }
 
-    /// Consumes a pairing code. Returns `Some(label)` if it was valid.
-    pub fn take_pair_code(&self, code_hash: &str) -> Result<Option<Option<String>>> {
+    /// Consumes a pairing code. Returns what it grants if it was valid.
+    pub fn take_pair_code(&self, code_hash: &str) -> Result<Option<PairGrant>> {
         let conn = self.conn();
-        let found: Option<(Option<String>, i64)> = conn
+        let found: Option<(PairGrant, i64)> = conn
             .query_row(
-                "DELETE FROM pair_codes WHERE code_hash = ?1 RETURNING label, expires_at",
+                "DELETE FROM pair_codes WHERE code_hash = ?1 RETURNING label, admin, expires_at",
                 [code_hash],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        PairGrant {
+                            label: row.get(0)?,
+                            admin: row.get(1)?,
+                        },
+                        row.get(2)?,
+                    ))
+                },
             )
             .optional()?;
-        Ok(found.and_then(|(label, expires_at)| (expires_at >= now()).then_some(label)))
+        Ok(found.and_then(|(grant, expires_at)| (expires_at >= now()).then_some(grant)))
     }
+}
+
+/// What a pairing code gives the device that redeems it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PairGrant {
+    pub label: Option<String>,
+    /// Can use the dashboard (manage deployments), not just open apps.
+    pub admin: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceAuth {
+    pub id: String,
+    pub admin: bool,
 }
 
 #[cfg(test)]
@@ -435,14 +469,15 @@ mod tests {
     #[test]
     fn pair_codes_are_single_use_and_expire() {
         let store = Store::open_in_memory().unwrap();
+        let phone = PairGrant {
+            label: Some("phone".into()),
+            admin: true,
+        };
+        store.add_pair_code("live", &phone, now() + 60).unwrap();
         store
-            .add_pair_code("live", Some("phone"), now() + 60)
+            .add_pair_code("old", &PairGrant::default(), now() - 1)
             .unwrap();
-        store.add_pair_code("old", None, now() - 1).unwrap();
-        assert_eq!(
-            store.take_pair_code("live").unwrap(),
-            Some(Some("phone".into()))
-        );
+        assert_eq!(store.take_pair_code("live").unwrap(), Some(phone));
         assert_eq!(store.take_pair_code("live").unwrap(), None);
         assert_eq!(store.take_pair_code("old").unwrap(), None);
         assert_eq!(store.take_pair_code("missing").unwrap(), None);
@@ -451,13 +486,43 @@ mod tests {
     #[test]
     fn devices() {
         let store = Store::open_in_memory().unwrap();
-        store.add_device("d1", Some("phone"), "hash1").unwrap();
-        assert_eq!(
-            store.device_token_hashes().unwrap(),
-            vec!["hash1".to_string()]
-        );
-        assert_eq!(store.devices().unwrap()[0].label.as_deref(), Some("phone"));
+        let grant = PairGrant {
+            label: Some("phone".into()),
+            admin: true,
+        };
+        store.add_device("d1", &grant, "hash1").unwrap();
+        store
+            .add_device("d2", &PairGrant::default(), "hash2")
+            .unwrap();
+        let auth = store.device_auth().unwrap();
+        assert!(auth.contains(&(
+            "hash1".to_string(),
+            DeviceAuth {
+                id: "d1".into(),
+                admin: true
+            }
+        )));
+        let devices = store.devices().unwrap();
+        assert_eq!(devices[0].label.as_deref(), Some("phone"));
+        assert!(devices[0].admin);
+        assert!(!devices[1].admin);
         assert!(store.remove_device("d1").unwrap());
         assert!(!store.remove_device("d1").unwrap());
+    }
+
+    #[test]
+    fn migrates_version_one_databases() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute(
+            "INSERT INTO devices (id, label, token_hash, created_at) VALUES ('old', NULL, 'h', 0)",
+            [],
+        )
+        .unwrap();
+        let store = Store::init(conn).unwrap();
+        let devices = store.devices().unwrap();
+        assert_eq!(devices.len(), 1);
+        assert!(!devices[0].admin, "existing devices stay app-only");
     }
 }

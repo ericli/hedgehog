@@ -141,6 +141,9 @@ pub async fn run(paths: Paths, options: Options) -> Result<()> {
         token,
         locks: Mutex::default(),
     });
+    daemon
+        .gateway
+        .set_api(api::dashboard_router(daemon.clone()));
     info!(apps = %daemon.paths.apps.display(), "hedgehog {VERSION} starting");
 
     // Bring apps back (listeners, containers) before the tunnel announces them.

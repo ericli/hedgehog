@@ -17,6 +17,8 @@ const RAILPACK_FRONTEND: &str = "ghcr.io/railwayapp/railpack-frontend";
 /// A build that takes longer than this is assumed stuck (e.g. waiting on a
 /// registry login) and is killed.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// `git pull` should be quick; longer means it's stuck on a login.
+const PULL_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 
 pub fn builder_name(builder: Builder) -> &'static str {
     match builder {
@@ -63,7 +65,7 @@ pub async fn build(
             if let Some(start) = &manifest.start {
                 prepare.arg("--start-cmd").arg(start);
             }
-            run_logged(prepare, log)
+            run_logged(prepare, log, STEP_TIMEOUT)
                 .await
                 .context("railpack could not work out how to build this app. Add a Dockerfile, or set `start` in hedgehog.toml")?;
             command
@@ -74,7 +76,7 @@ pub async fn build(
         }
     }
     command.arg(dir);
-    run_logged(command, log)
+    run_logged(command, log, STEP_TIMEOUT)
         .await
         .context("the image build failed")?;
     Ok(builder)
@@ -90,8 +92,28 @@ pub async fn railpack_installed() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// Fast-forwards an app folder to its upstream branch. Prompts are turned
+/// off (a background service can't answer them), so a repo that needs a
+/// password fails quickly instead of hanging.
+pub async fn git_pull(dir: &Path, log: &(dyn Fn(String) + Send + Sync)) -> Result<()> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(["pull", "--ff-only"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    run_logged(command, log, PULL_TIMEOUT)
+        .await
+        .context("git pull failed. If the repo is private, make sure this Mac can fetch it without a password prompt (an SSH key or a saved token)")
+}
+
 /// Runs a command, streaming stdout and stderr lines to `log`.
-async fn run_logged(mut command: Command, log: &(dyn Fn(String) + Send + Sync)) -> Result<()> {
+async fn run_logged(
+    mut command: Command,
+    log: &(dyn Fn(String) + Send + Sync),
+    timeout: Duration,
+) -> Result<()> {
     let program = command
         .as_std()
         .get_program()
@@ -116,11 +138,11 @@ async fn run_logged(mut command: Command, log: &(dyn Fn(String) + Send + Sync)) 
         child.wait().await
     };
     // On timeout `child` is dropped here, which kills it (`kill_on_drop`).
-    let status = match tokio::time::timeout(STEP_TIMEOUT, finished).await {
+    let status = match tokio::time::timeout(timeout, finished).await {
         Ok(status) => status?,
         Err(_) => bail!(
             "`{program}` ran for over {} minutes and was stopped",
-            STEP_TIMEOUT.as_secs() / 60
+            timeout.as_secs() / 60
         ),
     };
     if !status.success() {

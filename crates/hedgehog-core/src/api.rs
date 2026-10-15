@@ -63,6 +63,9 @@ pub struct AppInfo {
     pub url: Option<String>,
     pub public: bool,
     pub source_dir: String,
+    /// The folder is a git repo, so it can be pulled and redeployed.
+    #[serde(default)]
+    pub git: bool,
     pub builder: Option<String>,
     /// Git commit the running version was built from, when the folder is a repo.
     pub revision: Option<String>,
@@ -97,20 +100,32 @@ pub struct PublicUpdate {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PairRequest {
     pub label: Option<String>,
+    /// Let the device manage deployments from the dashboard, not just open apps.
+    #[serde(default)]
+    pub admin: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairResponse {
     pub url: String,
     pub expires_in_secs: u64,
+    /// The URL as a QR code, for the dashboard.
+    #[serde(default)]
+    pub qr_svg: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub id: String,
     pub label: Option<String>,
+    /// Can use the dashboard.
+    #[serde(default)]
+    pub admin: bool,
     /// Unix seconds.
     pub created_at: i64,
+    /// The device making this request (dashboard only).
+    #[serde(default)]
+    pub current: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

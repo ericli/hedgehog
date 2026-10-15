@@ -14,7 +14,7 @@ use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use futures_util::StreamExt;
 use hedgehog_core::api::{
     AppInfo, DeployEvent, EnvUpdate, ErrorBody, PairRequest, PairResponse, PublicUpdate, Status,
@@ -29,9 +29,9 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{info, warn};
 
 use crate::deploy::Source;
-use crate::gateway::PAIR_PATH;
+use crate::gateway::{CurrentDevice, PAIR_PATH};
 use crate::secrets::{constant_time_eq, hash_token, now, random_token};
-use crate::store::AppRecord;
+use crate::store::{AppRecord, PairGrant};
 use crate::{Daemon, VERSION, build};
 
 const PAIR_CODE_TTL: u64 = 10 * 60;
@@ -69,7 +69,18 @@ fn record(daemon: &Daemon, app: &str) -> ApiResult<AppRecord> {
     daemon.store.app(app)?.ok_or_else(|| not_found(app))
 }
 
+/// The control API for the CLI: every route needs the bearer token.
 pub fn router(daemon: AppState) -> Router {
+    routes(daemon.clone()).route_layer(middleware::from_fn_with_state(daemon, require_token))
+}
+
+/// The same routes with no token check, for the dashboard. Only the gateway
+/// serves these, after checking for an admin device; see `gateway::dashboard_api`.
+pub fn dashboard_router(daemon: AppState) -> Router {
+    routes(daemon)
+}
+
+fn routes(daemon: AppState) -> Router<()> {
     Router::new()
         .route("/v1/status", get(status))
         .route("/v1/apps", get(list_apps))
@@ -78,6 +89,7 @@ pub fn router(daemon: AppState) -> Router {
             post(deploy).layer(DefaultBodyLimit::disable()),
         )
         .route("/v1/apps/{name}/restart", post(restart))
+        .route("/v1/apps/{name}/pull", post(pull))
         .route("/v1/apps/{name}/stop", post(stop))
         .route("/v1/apps/{name}", delete(remove))
         .route("/v1/apps/{name}/logs", get(logs))
@@ -86,10 +98,6 @@ pub fn router(daemon: AppState) -> Router {
         .route("/v1/pair", post(pair))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", delete(revoke_device))
-        .route_layer(middleware::from_fn_with_state(
-            daemon.clone(),
-            require_token,
-        ))
         .with_state(daemon)
 }
 
@@ -195,6 +203,7 @@ fn app_info(daemon: &Daemon, app: AppRecord) -> AppInfo {
         url: daemon.gateway.app_url(&app.name),
         public: app.public.unwrap_or(manifest.public()),
         source_dir: app.source_dir.display().to_string(),
+        git: app.source_dir.join(".git").exists(),
         name: app.name,
         status: app.status,
         builder: app.builder,
@@ -287,6 +296,21 @@ async fn restart(State(daemon): State<AppState>, Path(name): Path<String>) -> Ap
     let (events, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         let _ = daemon.restart(&name, events).await;
+    });
+    Ok(event_stream(rx))
+}
+
+/// `git pull` in the app's folder, then deploy. For apps that are git clones.
+async fn pull(State(daemon): State<AppState>, Path(name): Path<String>) -> ApiResult<Response> {
+    let app = record(&daemon, &name)?;
+    if !app.source_dir.join(".git").exists() {
+        return Err(bad_request(format!(
+            "{name} isn't a git repo, so there's nothing to pull. Deploy it with `hedgehog deploy`"
+        )));
+    }
+    let (events, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let _ = daemon.deploy(&name, Source::Pull, events).await;
     });
     Ok(event_stream(rx))
 }
@@ -404,24 +428,47 @@ async fn pair(
     Json(request): Json<PairRequest>,
 ) -> ApiResult<Json<PairResponse>> {
     let code = random_token(16);
-    let label = request
-        .label
-        .as_deref()
-        .map(str::trim)
-        .filter(|label| !label.is_empty());
+    let grant = PairGrant {
+        label: request
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(str::to_string),
+        admin: request.admin,
+    };
     daemon
         .store
-        .add_pair_code(&hash_token(&code), label, now() + PAIR_CODE_TTL as i64)?;
+        .add_pair_code(&hash_token(&code), &grant, now() + PAIR_CODE_TTL as i64)?;
+    let url = format!("{}{PAIR_PATH}?code={code}", daemon.gateway.home_url());
     Ok(Json(PairResponse {
-        url: format!("{}{PAIR_PATH}?code={code}", daemon.gateway.home_url()),
+        qr_svg: qr_svg(&url),
+        url,
         expires_in_secs: PAIR_CODE_TTL,
     }))
 }
 
+fn qr_svg(text: &str) -> Option<String> {
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    Some(
+        code.render::<qrcode::render::svg::Color<'_>>()
+            .min_dimensions(220, 220)
+            .quiet_zone(true)
+            .build(),
+    )
+}
+
 async fn devices(
     State(daemon): State<AppState>,
+    current: Option<Extension<CurrentDevice>>,
 ) -> ApiResult<Json<Vec<hedgehog_core::api::DeviceInfo>>> {
-    Ok(Json(daemon.store.devices()?))
+    let mut devices = daemon.store.devices()?;
+    if let Some(Extension(CurrentDevice(id))) = current {
+        for device in &mut devices {
+            device.current = device.id == id;
+        }
+    }
+    Ok(Json(devices))
 }
 
 async fn revoke_device(

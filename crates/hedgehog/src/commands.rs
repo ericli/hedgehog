@@ -83,7 +83,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Pair { label } => pair(&client()?, label).await,
+        Command::Pair { label, admin } => pair(&client()?, label, admin).await,
         Command::Devices { action } => devices(&client()?, action).await,
         Command::Db { action } => crate::db::run(&paths, remote, action).await,
         Command::Status => status(&client()?).await,
@@ -375,16 +375,16 @@ fn print_qr(text: &str) -> Result<()> {
     Ok(())
 }
 
-async fn pair(client: &Client, label: Option<String>) -> Result<()> {
+async fn pair(client: &Client, label: Option<String>, admin: bool) -> Result<()> {
     let response: PairResponse = client
-        .send(Method::POST, "/v1/pair", &PairRequest { label })
+        .send(Method::POST, "/v1/pair", &PairRequest { label, admin })
         .await?
         .json()
         .await?;
-    show_pairing(&response)
+    show_pairing(&response, admin)
 }
 
-fn show_pairing(response: &PairResponse) -> Result<()> {
+fn show_pairing(response: &PairResponse, admin: bool) -> Result<()> {
     println!(
         "Scan this with your phone's camera, or open the link on the device you want to pair:\n"
     );
@@ -397,6 +397,15 @@ fn show_pairing(response: &PairResponse) -> Result<()> {
             response.expires_in_secs / 60
         ))
     );
+    if admin {
+        let home = response.url.split("/_hedgehog").next().unwrap_or_default();
+        println!(
+            "{}",
+            dim(&format!(
+                "This device can also manage hedgehog from the dashboard at {home}"
+            ))
+        );
+    }
     if response.url.starts_with("http://127.0.0.1") {
         println!(
             "{}",
@@ -419,8 +428,13 @@ async fn devices(client: &Client, action: Option<DevicesAction>) -> Result<()> {
         println!("No paired devices. Pair one with `hedgehog pair`.");
     }
     for device in devices {
+        let role = if device.admin {
+            green("manage")
+        } else {
+            dim("open apps")
+        };
         println!(
-            "{}  {}",
+            "{}  {role:<9}  {}",
             device.id,
             device.label.as_deref().unwrap_or("(no label)")
         );
@@ -768,12 +782,13 @@ async fn setup(paths: &Paths) -> Result<()> {
             "/v1/pair",
             &PairRequest {
                 label: Some("phone".into()),
+                admin: true,
             },
         )
         .await?
         .json()
         .await?;
-    show_pairing(&response)?;
+    show_pairing(&response, true)?;
 
     println!("\n{}", bold("You're set"));
     println!(

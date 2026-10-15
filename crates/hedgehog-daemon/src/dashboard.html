@@ -1,0 +1,799 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>hedgehog</title>
+<style>
+:root {
+  --bg: #fbfaf7; --fg: #1d1b16; --muted: #6b665c; --card: #ffffff; --line: #e6e1d6;
+  --soft: #f3f0e8; --accent: #8a5a2b; --accent-fg: #ffffff;
+  --ok: #2f7d4f; --ok-bg: #e5f2ea; --bad: #b4372f; --bad-bg: #f8e4e1; --wait: #9a6200; --wait-bg: #f8eed9;
+  --radius: 12px; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171512; --fg: #f1ece2; --muted: #a39d90; --card: #211e1a; --line: #37322b;
+    --soft: #1b1916; --accent: #d9a066; --accent-fg: #1d1b16;
+    --ok: #6cc28f; --ok-bg: #1f3328; --bad: #f0857c; --bad-bg: #3b2220; --wait: #e9b44c; --wait-bg: #3a2f17;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+a { color: inherit; }
+button, input, select { font: inherit; color: inherit; }
+main { max-width: 760px; margin: 0 auto; padding: 0 16px 48px; }
+
+/* Top bar */
+.top { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line); }
+.top-inner { max-width: 760px; margin: 0 auto; padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+.brand { font-weight: 650; font-size: 18px; margin-right: auto; }
+.tunnel { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.wait { background: var(--wait); }
+
+/* Sections */
+section { margin-top: 28px; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+h2 { font-size: 15px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 14px; }
+.empty { padding: 20px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--muted); }
+code { font-family: var(--mono); font-size: .9em; background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; }
+
+/* App cards */
+.apps { display: grid; gap: 10px; }
+.app { display: block; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 16px; cursor: pointer; }
+.app:hover { border-color: var(--accent); }
+.app:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.name { font-weight: 600; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.url { font-size: 14px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.meta { font-size: 13px; color: var(--muted); margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.error-line { font-size: 13px; color: var(--bad); margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--soft); color: var(--muted); white-space: nowrap; flex: none; }
+.pill.running { background: var(--ok-bg); color: var(--ok); }
+.pill.failed { background: var(--bad-bg); color: var(--bad); }
+.pill.building, .pill.new { background: var(--wait-bg); color: var(--wait); }
+.pill.building::before, .pill.new::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1s infinite alternate; }
+@keyframes pulse { from { opacity: .25; } to { opacity: 1; } }
+.chip { font-size: 12px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.chip.accent { border-color: var(--accent); color: var(--accent); }
+.spacer { margin-left: auto; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; padding: 7px 14px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card); cursor: pointer; text-decoration: none; font-size: 15px; white-space: nowrap; }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.btn.danger { color: var(--bad); }
+.btn.danger.solid { background: var(--bad); border-color: var(--bad); color: #fff; }
+.btn.small { min-height: 32px; padding: 4px 10px; font-size: 14px; }
+.btn.icon { min-width: 38px; padding: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.busy::after { content: ""; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Devices */
+.list { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
+.item { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--line); }
+.item:first-child { border-top: 0; }
+.item .grow { min-width: 0; flex: 1; }
+.item .title { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Dialogs */
+dialog { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--bg); color: var(--fg);
+  width: min(720px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); }
+dialog::backdrop { background: rgba(10, 8, 5, .45); }
+.sheet { display: flex; flex-direction: column; max-height: calc(100dvh - 48px); }
+/* A fixed height keeps the app sheet from jumping as tabs change size. */
+dialog.full { height: min(760px, calc(100dvh - 48px)); }
+dialog.full .sheet { height: 100%; }
+dialog.full .sheet-body { flex: 1; }
+.sheet-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.sheet-head .name { font-size: 19px; }
+.sheet-body { padding: 16px; overflow: auto; }
+@media (max-width: 640px) {
+  dialog.full { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; border: 0; }
+  dialog.full .sheet { height: 100dvh; max-height: 100dvh; }
+  dialog.full .sheet-head { padding-top: max(14px, env(safe-area-inset-top)); }
+}
+.tabs { display: flex; gap: 4px; margin: 18px 0 12px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.tab { border: 0; background: none; padding: 8px 12px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+pre.console { margin: 0; background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: 12.5px/1.5 var(--mono);
+  white-space: pre-wrap; word-break: break-word; overflow: auto; height: min(52dvh, 460px); }
+.console .step { font-weight: 700; }
+.console .log { color: var(--muted); }
+.console .done { color: var(--ok); font-weight: 700; }
+.console .fail { color: var(--bad); font-weight: 700; }
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 14px; color: var(--muted); }
+.toolbar label { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Forms */
+input[type="text"], input[type="password"] { width: 100%; min-height: 38px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line);
+  background: var(--card); }
+input.mono { font-family: var(--mono); font-size: 14px; }
+.env-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+.env-row .key { font-family: var(--mono); font-size: 14px; overflow: hidden; text-overflow: ellipsis; }
+.env-row.removed .key, .env-row.removed input { text-decoration: line-through; opacity: .5; }
+.env-add { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 6px; margin-top: 12px; }
+@media (max-width: 480px) {
+  .tab { padding: 8px 9px; }
+  .env-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .env-row .key { grid-column: 1 / -1; }
+  .env-add { grid-template-columns: 1fr; }
+}
+.field { margin-bottom: 14px; }
+.field > span { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; cursor: pointer; background: var(--card); }
+.choice:has(input:checked) { border-color: var(--accent); }
+.choice input { margin-top: 4px; accent-color: var(--accent); }
+.switch { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; }
+.switch input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 14px; margin: 16px 0; }
+dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+.danger-zone { margin-top: 24px; padding: 14px; border: 1px solid var(--bad); border-radius: 10px; }
+.danger-zone h3 { margin: 0 0 6px; font-size: 15px; color: var(--bad); }
+.qr { background: #fff; border-radius: 12px; padding: 10px; width: fit-content; margin: 4px auto 14px; }
+.qr svg { display: block; width: 220px; height: 220px; }
+.link-box { display: flex; gap: 6px; }
+.notice { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--soft); border: 1px solid var(--line); margin-top: 10px; }
+.notice.bad { background: var(--bad-bg); border-color: transparent; color: var(--bad); }
+.notice.ok { background: var(--ok-bg); border-color: transparent; color: var(--ok); }
+footer { margin-top: 36px; font-size: 13px; color: var(--muted); text-align: center; }
+.toast { position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--fg); color: var(--bg);
+  padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: calc(100vw - 32px); z-index: 10; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast.show { opacity: 1; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="top-inner">
+    <div class="brand">🦔 hedgehog</div>
+    <div class="tunnel" id="tunnel"><span class="dot"></span><span>…</span></div>
+  </div>
+</div>
+
+<main>
+  <section>
+    <div class="section-head"><h2>Apps</h2><span class="muted small" id="app-summary"></span></div>
+    <div class="apps" id="apps"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Devices</h2><button class="btn small" id="pair-open">Pair a device</button></div>
+    <div class="list" id="devices"></div>
+  </section>
+
+  <footer id="footer"></footer>
+</main>
+
+<dialog id="app-dialog" class="full" aria-labelledby="app-name">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="row" style="flex:1; min-width:0">
+        <span class="name" id="app-name"></span>
+        <span class="pill" id="app-status"></span>
+      </div>
+      <button class="btn icon" id="app-close" aria-label="Close">✕</button>
+    </div>
+    <div class="sheet-body">
+      <a class="url" id="app-url" target="_blank" rel="noopener"></a>
+      <div class="error-line" id="app-error" hidden></div>
+      <div class="actions" style="margin-top:14px">
+        <a class="btn primary" id="act-open" target="_blank" rel="noopener">Open ↗</a>
+        <button class="btn" id="act-redeploy">Redeploy</button>
+        <button class="btn" id="act-pull" hidden>Pull &amp; redeploy</button>
+        <button class="btn" id="act-restart">Restart</button>
+        <button class="btn" id="act-stop">Stop</button>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab="output" aria-selected="true">Output</button>
+        <button class="tab" role="tab" data-tab="logs">Logs</button>
+        <button class="tab" role="tab" data-tab="build">Build</button>
+        <button class="tab" role="tab" data-tab="env">Env</button>
+        <button class="tab" role="tab" data-tab="settings">Settings</button>
+      </div>
+
+      <div data-panel="output">
+        <pre class="console" id="output"><span class="log">Redeploy, pull, or restart, and the output shows up here.</span></pre>
+      </div>
+      <div data-panel="logs" hidden>
+        <div class="toolbar">
+          <label><input type="checkbox" id="logs-follow" checked> Follow</label>
+          <span class="spacer"></span>
+          <button class="btn small" id="logs-reload">Reload</button>
+        </div>
+        <pre class="console" id="logs"></pre>
+      </div>
+      <div data-panel="build" hidden>
+        <pre class="console" id="build"></pre>
+      </div>
+      <div data-panel="env" hidden>
+        <p class="muted small" style="margin-top:0">Set here, these override the app's <code>.env</code> and <code>hedgehog.toml</code>. Saving restarts the app.</p>
+        <div id="env-rows"></div>
+        <form class="env-add" id="env-add">
+          <input type="text" class="mono" id="env-key" placeholder="KEY" autocomplete="off" autocapitalize="characters" spellcheck="false">
+          <input type="text" class="mono" id="env-value" placeholder="value" autocomplete="off" spellcheck="false">
+          <button class="btn" type="submit">Add</button>
+        </form>
+        <div class="actions" style="margin-top:14px">
+          <button class="btn primary" id="env-save" disabled>Save &amp; restart</button>
+          <button class="btn" id="env-discard" disabled>Discard changes</button>
+        </div>
+        <div class="notice" id="env-notice" hidden></div>
+      </div>
+      <div data-panel="settings" hidden>
+        <label class="switch">
+          <span><strong>Public</strong><br><span class="muted small">Anyone with the URL can open it, not only your paired devices.</span></span>
+          <input type="checkbox" id="public-toggle">
+        </label>
+        <dl class="facts" id="facts"></dl>
+        <div class="danger-zone">
+          <h3>Remove this app</h3>
+          <p class="small muted" style="margin:0 0 10px">Stops it and moves its folder to the Trash. Its data and database are kept unless you tick the box.</p>
+          <label class="small" style="display:flex; gap:8px; align-items:center; margin-bottom:10px">
+            <input type="checkbox" id="remove-purge"> Also delete its data folder and database
+          </label>
+          <div class="link-box">
+            <input type="text" id="remove-confirm" placeholder="Type the app name to confirm" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button class="btn danger solid" id="remove-go" disabled>Remove</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="pair-dialog" aria-labelledby="pair-title">
+  <div class="sheet">
+    <div class="sheet-head">
+      <span class="name" id="pair-title" style="flex:1">Pair a device</span>
+      <button class="btn icon" id="pair-close" aria-label="Close">✕</button>
+    </div>
+    <div class="sheet-body">
+      <form id="pair-form">
+        <label class="field"><span>Name</span><input type="text" id="pair-label" placeholder="e.g. iPad" autocomplete="off"></label>
+        <label class="choice"><input type="radio" name="role" value="apps" checked>
+          <span><strong>Open apps</strong><br><span class="muted small">Can use your private apps. Can't see this dashboard.</span></span></label>
+        <label class="choice"><input type="radio" name="role" value="admin">
+          <span><strong>Manage hedgehog</strong><br><span class="muted small">Can also deploy, restart, edit env vars, and pair devices from here.</span></span></label>
+        <button class="btn primary" type="submit" style="width:100%; margin-top:6px">Create pairing link</button>
+      </form>
+      <div id="pair-result" hidden>
+        <p class="small muted" style="margin-top:0; text-align:center">Scan with the other device's camera, or send it the link.</p>
+        <div class="qr" id="pair-qr"></div>
+        <div class="link-box">
+          <input type="text" id="pair-link" readonly class="mono">
+          <button class="btn" id="pair-copy">Copy</button>
+        </div>
+        <p class="small muted" id="pair-expiry"></p>
+        <button class="btn" id="pair-again" style="width:100%">Pair another</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const API = "/_hedgehog/api/v1";
+const $ = (id) => document.getElementById(id);
+const state = { apps: [], status: null, devices: [], selected: null, busy: false, logs: null, env: null };
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children) if (child != null) node.append(child);
+  return node;
+}
+
+function safeUrl(url) {
+  return /^https?:\/\//.test(url || "") ? url : null;
+}
+
+function ago(seconds) {
+  if (!seconds) return null;
+  const diff = Math.max(0, Date.now() / 1000 - seconds);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+let toastTimer;
+function toast(message) {
+  const node = $("toast");
+  node.textContent = message;
+  node.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.remove("show"), 3200);
+}
+
+async function call(method, path, body, signal) {
+  const headers = { "x-hedgehog": "1" };
+  if (body !== undefined) headers["content-type"] = "application/json";
+  const response = await fetch(API + path, {
+    method, headers, signal, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (response.status === 401) { location.reload(); throw new Error("not paired"); }
+  if (!response.ok) {
+    let message = response.statusText;
+    try { message = (await response.json()).error || message; } catch {}
+    throw new Error(message);
+  }
+  return response;
+}
+const getJson = async (path) => (await call("GET", path)).json();
+
+async function readStream(response, onChunk) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    onChunk(decoder.decode(value, { stream: true }));
+  }
+}
+
+async function readLines(response, onLine) {
+  let buffer = "";
+  await readStream(response, (chunk) => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, index);
+      buffer = buffer.slice(index + 1);
+      if (line.trim()) onLine(line);
+    }
+  });
+  if (buffer.trim()) onLine(buffer);
+}
+
+/* ---------- Overview ---------- */
+
+function renderTunnel() {
+  const tunnel = state.status?.tunnel;
+  const dot = $("tunnel").querySelector(".dot");
+  const label = $("tunnel").querySelector("span:last-child");
+  const stateName = tunnel?.state || "unknown";
+  dot.className = "dot " + ({ connected: "ok", off: "", stopped: "bad" }[stateName] ?? "wait");
+  label.textContent = stateName === "connected" ? "online" : stateName;
+  $("tunnel").title = tunnel?.error || "";
+}
+
+function appCard(app) {
+  const meta = el("div", { class: "meta" },
+    el("span", { class: "chip" + (app.public ? " accent" : ""), text: app.public ? "public" : "private" }),
+    app.deployed_at ? el("span", { text: `deployed ${ago(app.deployed_at)}` }) : null,
+    app.builder ? el("span", { text: app.builder }) : null,
+    app.revision ? el("span", { text: app.revision.slice(0, 7) }) : null,
+  );
+  return el("button", { class: "app", onclick: () => openApp(app.name) },
+    el("div", { class: "row" },
+      el("span", { class: "name", text: app.name }),
+      el("span", { class: "spacer" }),
+      el("span", { class: `pill ${app.status}`, text: app.status })),
+    el("div", { class: "url", text: app.url || "" }),
+    meta,
+    app.last_error ? el("div", { class: "error-line", text: "Last deploy failed: " + app.last_error.split("\n")[0] }) : null,
+  );
+}
+
+function renderApps() {
+  const list = $("apps");
+  list.replaceChildren();
+  if (!state.apps.length) {
+    list.append(el("div", { class: "empty" },
+      "No apps yet. Drop a project folder into ", el("code", { text: state.status?.apps_dir || "~/Hedgehog/apps" }),
+      " on your Mac, or run ", el("code", { text: "hedgehog deploy" }), " in one."));
+  } else {
+    for (const app of state.apps) list.append(appCard(app));
+  }
+  const running = state.apps.filter((app) => app.status === "running").length;
+  $("app-summary").textContent = state.apps.length ? `${running} of ${state.apps.length} running` : "";
+}
+
+function renderDevices() {
+  const list = $("devices");
+  list.replaceChildren();
+  for (const device of state.devices) {
+    const revoke = el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeDevice(device) });
+    list.append(el("div", { class: "item" },
+      el("div", { class: "grow" },
+        el("div", { class: "title", text: device.label || "Unnamed device" }),
+        el("div", { class: "muted small", text: `paired ${ago(device.created_at)}` + (device.current ? " · this device" : "") })),
+      el("span", { class: "chip" + (device.admin ? " accent" : ""), text: device.admin ? "manage" : "open apps" }),
+      revoke));
+  }
+  if (!state.devices.length) list.append(el("div", { class: "item muted", text: "No devices yet." }));
+}
+
+function renderFooter() {
+  const status = state.status;
+  if (!status) return;
+  const parts = [`hedgehog ${status.version}`, status.docker ? "Docker ok" : "Docker isn't running"];
+  if (!status.railpack) parts.push("Railpack missing");
+  $("footer").textContent = parts.join(" · ");
+}
+
+async function refresh() {
+  try {
+    const [status, apps, devices] = await Promise.all([getJson("/status"), getJson("/apps"), getJson("/devices")]);
+    Object.assign(state, { status, apps, devices });
+    renderTunnel(); renderApps(); renderDevices(); renderFooter();
+    if (state.selected) renderAppHeader();
+  } catch (error) {
+    if (error.message !== "not paired") toast(`Couldn't refresh: ${error.message}`);
+  }
+}
+
+async function revokeDevice(device) {
+  const warning = device.current
+    ? "This is the device you're using now. You'll lose access to this dashboard. Revoke it anyway?"
+    : `Revoke “${device.label || "Unnamed device"}”? It won't be able to open your apps anymore.`;
+  if (!confirm(warning)) return;
+  try {
+    await call("DELETE", `/devices/${encodeURIComponent(device.id)}`);
+    if (device.current) { location.reload(); return; }
+    toast("Device revoked");
+    refresh();
+  } catch (error) { toast(error.message); }
+}
+
+/* ---------- App sheet ---------- */
+
+const selectedApp = () => state.apps.find((app) => app.name === state.selected);
+
+function renderAppHeader() {
+  const app = selectedApp();
+  if (!app) { closeApp(); return; }
+  $("app-name").textContent = app.name;
+  const pill = $("app-status");
+  pill.className = `pill ${app.status}`;
+  pill.textContent = app.status;
+  const url = safeUrl(app.url);
+  $("app-url").textContent = app.url || "";
+  if (url) $("app-url").href = url; else $("app-url").removeAttribute("href");
+  $("act-open").hidden = !url || app.status !== "running";
+  if (url) $("act-open").href = url;
+  $("act-pull").hidden = !app.git;
+  const stopped = app.status === "stopped";
+  $("act-stop").textContent = stopped ? "Start" : "Stop";
+  $("act-restart").hidden = stopped;
+  const error = $("app-error");
+  error.hidden = !app.last_error;
+  error.textContent = app.last_error ? "Last deploy failed: " + app.last_error.split("\n")[0] : "";
+  for (const id of ["act-redeploy", "act-pull", "act-restart", "act-stop"]) $(id).disabled = state.busy;
+  $("public-toggle").checked = app.public;
+  const facts = $("facts");
+  facts.replaceChildren();
+  const fact = (label, value) => value && facts.append(el("dt", { text: label }), el("dd", { text: value }));
+  fact("Folder", app.source_dir);
+  fact("Builder", app.builder);
+  fact("Commit", app.revision);
+  fact("Deployed", app.deployed_at ? new Date(app.deployed_at * 1000).toLocaleString() : null);
+}
+
+function openApp(name) {
+  state.selected = name;
+  $("remove-confirm").value = "";
+  $("remove-purge").checked = false;
+  $("remove-go").disabled = true;
+  $("output").replaceChildren(el("span", { class: "log", text: "Redeploy, pull, or restart, and the output shows up here." }));
+  renderAppHeader();
+  selectTab("output");
+  $("app-dialog").showModal();
+}
+
+function closeApp() {
+  stopLogs();
+  state.selected = null;
+  state.env = null;
+  if ($("app-dialog").open) $("app-dialog").close();
+}
+
+function selectTab(name) {
+  for (const tab of document.querySelectorAll(".tab")) tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
+  for (const panel of document.querySelectorAll("[data-panel]")) panel.hidden = panel.dataset.panel !== name;
+  if (name !== "logs") stopLogs();
+  if (name === "logs") startLogs();
+  if (name === "build") loadBuildLog();
+  if (name === "env") loadEnv();
+}
+
+function appendConsole(pre, text, cls) {
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.append(el("span", { class: cls, text: text + "\n" }));
+  while (pre.childNodes.length > 2000) pre.firstChild.remove();
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+}
+
+async function runAction(button, method, path, label) {
+  const name = state.selected;
+  if (!name || state.busy) return;
+  state.busy = true;
+  button.classList.add("busy");
+  renderAppHeader();
+  selectTab("output");
+  const out = $("output");
+  out.replaceChildren();
+  appendConsole(out, `${label} ${name}…`, "step");
+  try {
+    const response = await call(method, `/apps/${encodeURIComponent(name)}/${path}`);
+    await readLines(response, (line) => {
+      let event;
+      try { event = JSON.parse(line); } catch { return; }
+      if (event.type === "step") appendConsole(out, `▸ ${event.message}`, "step");
+      else if (event.type === "log") appendConsole(out, event.line, "log");
+      else if (event.type === "done") appendConsole(out, `✓ Live${event.url ? " at " + event.url : ""}`, "done");
+      else if (event.type === "failed") appendConsole(out, `✗ ${event.error}`, "fail");
+    });
+  } catch (error) {
+    appendConsole(out, `✗ ${error.message}`, "fail");
+  } finally {
+    state.busy = false;
+    button.classList.remove("busy");
+    await refresh();
+  }
+}
+
+async function toggleStop() {
+  const app = selectedApp();
+  if (!app) return;
+  if (app.status === "stopped") return runAction($("act-stop"), "POST", "restart", "Starting");
+  if (!confirm(`Stop ${app.name}? It stays stopped until you start it again.`)) return;
+  try {
+    await call("POST", `/apps/${encodeURIComponent(app.name)}/stop`);
+    toast(`${app.name} stopped`);
+    refresh();
+  } catch (error) { toast(error.message); }
+}
+
+/* Logs */
+function stopLogs() {
+  if (state.logs) { state.logs.abort(); state.logs = null; }
+}
+
+async function startLogs() {
+  stopLogs();
+  const name = state.selected;
+  const pre = $("logs");
+  pre.replaceChildren();
+  const controller = new AbortController();
+  state.logs = controller;
+  const follow = $("logs-follow").checked;
+  try {
+    const response = await call("GET", `/apps/${encodeURIComponent(name)}/logs?tail=300&follow=${follow}`, undefined, controller.signal);
+    let pending = "";
+    await readStream(response, (chunk) => {
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop();
+      for (const line of lines) appendConsole(pre, line, "");
+    });
+    if (pending) appendConsole(pre, pending, "");
+    if (!pre.childNodes.length) appendConsole(pre, "No output yet.", "log");
+  } catch (error) {
+    if (error.name !== "AbortError") appendConsole(pre, error.message, "fail");
+  }
+}
+
+async function loadBuildLog() {
+  const pre = $("build");
+  pre.textContent = "Loading…";
+  try {
+    const text = await (await call("GET", `/apps/${encodeURIComponent(state.selected)}/logs?build=true`)).text();
+    pre.textContent = text || "Empty.";
+    pre.scrollTop = pre.scrollHeight;
+  } catch (error) {
+    pre.textContent = error.message;
+  }
+}
+
+/* Env */
+function envDirty() {
+  return state.env && (Object.keys(state.env.set).length > 0 || state.env.unset.size > 0);
+}
+
+function renderEnv() {
+  const rows = $("env-rows");
+  rows.replaceChildren();
+  const env = state.env;
+  const keys = [...new Set([...Object.keys(env.saved), ...Object.keys(env.set)])].sort();
+  if (!keys.length) rows.append(el("p", { class: "muted small", text: "No variables set here yet." }));
+  for (const key of keys) {
+    const removed = env.unset.has(key);
+    const value = env.set[key] ?? env.saved[key] ?? "";
+    const input = el("input", { type: "password", class: "mono", value, "aria-label": `Value of ${key}`, autocomplete: "off", spellcheck: "false" });
+    input.value = value;
+    input.disabled = removed;
+    input.addEventListener("input", () => {
+      if (input.value === env.saved[key]) delete env.set[key]; else env.set[key] = input.value;
+      updateEnvButtons();
+    });
+    const reveal = el("button", { class: "btn small", type: "button", text: "Show", onclick: () => {
+      const hidden = input.type === "password";
+      input.type = hidden ? "text" : "password";
+      reveal.textContent = hidden ? "Hide" : "Show";
+    } });
+    const remove = el("button", { class: "btn small danger", type: "button", text: removed ? "Undo" : "Remove", onclick: () => {
+      if (removed) env.unset.delete(key);
+      else if (key in env.saved) { env.unset.add(key); delete env.set[key]; }
+      else delete env.set[key];
+      renderEnv();
+    } });
+    rows.append(el("div", { class: "env-row" + (removed ? " removed" : "") }, el("div", { class: "key", text: key }), input, reveal, remove));
+  }
+  updateEnvButtons();
+}
+
+function updateEnvButtons() {
+  const dirty = envDirty();
+  $("env-save").disabled = !dirty;
+  $("env-discard").disabled = !dirty;
+}
+
+async function loadEnv() {
+  $("env-notice").hidden = true;
+  $("env-rows").replaceChildren(el("p", { class: "muted small", text: "Loading…" }));
+  try {
+    const saved = await getJson(`/apps/${encodeURIComponent(state.selected)}/env`);
+    state.env = { saved, set: {}, unset: new Set() };
+    renderEnv();
+  } catch (error) {
+    $("env-rows").replaceChildren(el("p", { class: "notice bad", text: error.message }));
+  }
+}
+
+function addEnv(event) {
+  event.preventDefault();
+  const key = $("env-key").value.trim();
+  const value = $("env-value").value;
+  if (!key) return;
+  if (/[\s=]/.test(key)) { toast("Names can't contain spaces or ="); return; }
+  state.env.set[key] = value;
+  state.env.unset.delete(key);
+  $("env-key").value = "";
+  $("env-value").value = "";
+  renderEnv();
+  $("env-key").focus();
+}
+
+async function saveEnv() {
+  const env = state.env;
+  const notice = $("env-notice");
+  try {
+    const response = await call("PATCH", `/apps/${encodeURIComponent(state.selected)}/env`, { set: env.set, unset: [...env.unset] });
+    const { restarting } = await response.json();
+    notice.className = "notice ok";
+    notice.textContent = restarting ? "Saved. Restarting the app with the new values…" : "Saved. They'll apply on the next deploy.";
+    notice.hidden = false;
+    await loadEnv();
+    notice.hidden = false;
+    setTimeout(refresh, 1500);
+  } catch (error) {
+    notice.className = "notice bad";
+    notice.textContent = error.message;
+    notice.hidden = false;
+  }
+}
+
+/* Settings */
+async function setPublic(event) {
+  const app = selectedApp();
+  const wanted = event.target.checked;
+  try {
+    await call("PUT", `/apps/${encodeURIComponent(app.name)}/public`, { public: wanted });
+    toast(wanted ? `${app.name} is public` : `${app.name} is private`);
+    refresh();
+  } catch (error) {
+    event.target.checked = !wanted;
+    toast(error.message);
+  }
+}
+
+async function removeApp() {
+  const app = selectedApp();
+  const purge = $("remove-purge").checked;
+  const button = $("remove-go");
+  button.disabled = true;
+  button.classList.add("busy");
+  try {
+    await call("DELETE", `/apps/${encodeURIComponent(app.name)}?purge=${purge}`);
+    toast(`Removed ${app.name}`);
+    closeApp();
+    refresh();
+  } catch (error) {
+    toast(error.message);
+    button.disabled = false;
+  } finally {
+    button.classList.remove("busy");
+  }
+}
+
+/* ---------- Pairing ---------- */
+
+function openPair() {
+  $("pair-form").hidden = false;
+  $("pair-result").hidden = true;
+  $("pair-label").value = "";
+  $("pair-form").querySelector('input[value="apps"]').checked = true;
+  $("pair-dialog").showModal();
+}
+
+async function createPair(event) {
+  event.preventDefault();
+  const admin = $("pair-form").querySelector('input[name="role"]:checked').value === "admin";
+  try {
+    const response = await call("POST", "/pair", { label: $("pair-label").value.trim() || null, admin });
+    const pairing = await response.json();
+    // The QR SVG is generated by hedgehog itself from the pairing URL.
+    $("pair-qr").innerHTML = pairing.qr_svg || "";
+    $("pair-link").value = pairing.url;
+    $("pair-expiry").textContent = `Works once and expires in ${Math.round(pairing.expires_in_secs / 60)} minutes.` +
+      (admin ? " This device will be able to manage hedgehog." : "");
+    $("pair-form").hidden = true;
+    $("pair-result").hidden = false;
+  } catch (error) { toast(error.message); }
+}
+
+async function copyPairLink() {
+  try {
+    await navigator.clipboard.writeText($("pair-link").value);
+    toast("Link copied");
+  } catch {
+    $("pair-link").select();
+  }
+}
+
+/* ---------- Wiring ---------- */
+
+$("app-close").addEventListener("click", closeApp);
+// "close" fires asynchronously; ignore it if another app was opened since.
+$("app-dialog").addEventListener("close", () => {
+  if ($("app-dialog").open) return;
+  stopLogs();
+  state.selected = null;
+});
+$("act-redeploy").addEventListener("click", (event) => runAction(event.currentTarget, "POST", "deploy", "Redeploying"));
+$("act-pull").addEventListener("click", (event) => runAction(event.currentTarget, "POST", "pull", "Pulling and redeploying"));
+$("act-restart").addEventListener("click", (event) => runAction(event.currentTarget, "POST", "restart", "Restarting"));
+$("act-stop").addEventListener("click", toggleStop);
+for (const tab of document.querySelectorAll(".tab")) tab.addEventListener("click", () => selectTab(tab.dataset.tab));
+$("logs-follow").addEventListener("change", startLogs);
+$("logs-reload").addEventListener("click", startLogs);
+$("env-add").addEventListener("submit", addEnv);
+$("env-save").addEventListener("click", saveEnv);
+$("env-discard").addEventListener("click", loadEnv);
+$("public-toggle").addEventListener("change", setPublic);
+$("remove-confirm").addEventListener("input", (event) => { $("remove-go").disabled = event.target.value !== state.selected; });
+$("remove-go").addEventListener("click", removeApp);
+$("pair-open").addEventListener("click", openPair);
+$("pair-close").addEventListener("click", () => $("pair-dialog").close());
+$("pair-form").addEventListener("submit", createPair);
+$("pair-copy").addEventListener("click", copyPairLink);
+$("pair-again").addEventListener("click", openPair);
+
+refresh();
+setInterval(() => { if (document.visibilityState === "visible" && !state.busy) refresh(); }, 5000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
+</script>
+</body>
+</html>

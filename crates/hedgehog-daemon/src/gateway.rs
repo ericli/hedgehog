@@ -2,15 +2,18 @@
 //! its own local listener, so the tunnel route alone decides which app a
 //! request reaches (the `Host` header is never trusted for routing). It checks
 //! that the visitor is one of your paired devices, then proxies to the app.
+//!
+//! The home listener (the tunnel's bare hostname) serves pairing, the app
+//! list, and for admin devices the dashboard and its API.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use anyhow::Result;
 use bytes::Bytes;
-use http_body_util::combinators::BoxBody;
+use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{self, HeaderMap, HeaderValue};
@@ -26,13 +29,25 @@ use tracing::{debug, warn};
 
 use crate::pages;
 use crate::secrets::{hash_token, random_token};
-use crate::store::Store;
+use crate::store::{DeviceAuth, Store};
 
 pub const COOKIE: &str = "hedgehog_device";
 pub const PAIR_PATH: &str = "/_hedgehog/pair";
+/// The dashboard calls the control API under this prefix.
+pub const API_PREFIX: &str = "/_hedgehog/api";
+/// Every dashboard API request must carry this header. Other sites (including
+/// your own apps on sibling subdomains) can't add it without a CORS preflight,
+/// which the gateway never approves.
+pub const API_HEADER: &str = "x-hedgehog";
 const COOKIE_MAX_AGE: u64 = 400 * 24 * 60 * 60;
+const DASHBOARD: &str = include_str!("dashboard.html");
 
-type Body = BoxBody<Bytes, hyper::Error>;
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+type Body = UnsyncBoxBody<Bytes, BoxError>;
+
+/// The paired device making a dashboard API request; handlers can read it.
+#[derive(Debug, Clone)]
+pub struct CurrentDevice(pub String);
 
 /// Where an app's traffic should go right now.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -59,11 +74,14 @@ struct Inner {
     store: Arc<Store>,
     upstreams: RwLock<HashMap<String, Upstream>>,
     listeners: RwLock<HashMap<String, AppListener>>,
-    devices: RwLock<HashSet<String>>,
+    /// Token hash to device.
+    devices: RwLock<HashMap<String, DeviceAuth>>,
     /// Tunnel hostname (`<id>.opentunnel.xyz`) once the tunnel is up.
     hostname: RwLock<Option<String>>,
     home_port: u16,
     client: Client<HttpConnector, Incoming>,
+    /// Control API handlers for the dashboard, set once the daemon is built.
+    api: OnceLock<axum::Router>,
 }
 
 #[derive(Clone)]
@@ -76,7 +94,7 @@ impl Gateway {
     pub async fn start(store: Arc<Store>) -> Result<Self> {
         let home = TcpListener::bind("127.0.0.1:0").await?;
         let home_port = home.local_addr()?.port();
-        let devices = store.device_token_hashes()?.into_iter().collect();
+        let devices = store.device_auth()?.into_iter().collect();
         let mut connector = HttpConnector::new();
         connector.set_nodelay(true);
         let inner = Arc::new(Inner {
@@ -87,6 +105,7 @@ impl Gateway {
             hostname: RwLock::default(),
             home_port,
             client: Client::builder(TokioExecutor::new()).build(connector),
+            api: OnceLock::new(),
         });
         tokio::spawn(serve(home, inner.clone(), Target::Home));
         Ok(Self { inner })
@@ -94,6 +113,11 @@ impl Gateway {
 
     pub fn home_port(&self) -> u16 {
         self.inner.home_port
+    }
+
+    /// Serves these control API routes to admin devices under [`API_PREFIX`].
+    pub fn set_api(&self, router: axum::Router) {
+        let _ = self.inner.api.set(router);
     }
 
     pub fn set_hostname(&self, hostname: Option<String>) {
@@ -164,12 +188,7 @@ impl Gateway {
     }
 
     pub fn reload_devices(&self) -> Result<()> {
-        let devices = self
-            .inner
-            .store
-            .device_token_hashes()?
-            .into_iter()
-            .collect();
+        let devices = self.inner.store.device_auth()?.into_iter().collect();
         *self.inner.devices.write().unwrap() = devices;
         Ok(())
     }
@@ -201,9 +220,23 @@ impl Inner {
         }
     }
 
-    fn is_paired(&self, headers: &HeaderMap) -> bool {
+    fn device(&self, headers: &HeaderMap) -> Option<DeviceAuth> {
         let devices = self.devices.read().unwrap();
-        cookie_values(headers, COOKIE).any(|token| devices.contains(&hash_token(token)))
+        cookie_values(headers, COOKIE).find_map(|token| devices.get(&hash_token(token)).cloned())
+    }
+
+    fn is_paired(&self, headers: &HeaderMap) -> bool {
+        self.device(headers).is_some()
+    }
+
+    /// Origins the dashboard is served from.
+    fn home_origins(&self) -> [String; 3] {
+        let port = self.home_port;
+        [
+            self.home_url(),
+            format!("http://127.0.0.1:{port}"),
+            format!("http://localhost:{port}"),
+        ]
     }
 
     /// The cookie covers every app (`Domain=<id>.opentunnel.xyz`) when
@@ -261,20 +294,27 @@ async fn serve(listener: TcpListener, inner: Arc<Inner>, target: Target) {
 
 async fn handle(inner: &Inner, target: &Target, request: Request<Incoming>) -> Response<Body> {
     match target {
-        Target::Home => handle_home(inner, request),
+        Target::Home => handle_home(inner, request).await,
         Target::App(app) => handle_app(inner, app, request).await,
     }
 }
 
-fn handle_home(inner: &Inner, request: Request<Incoming>) -> Response<Body> {
-    if request.uri().path() == PAIR_PATH {
+async fn handle_home(inner: &Inner, request: Request<Incoming>) -> Response<Body> {
+    let path = request.uri().path();
+    if path == PAIR_PATH {
         return pair(inner, &request);
     }
-    if request.uri().path() != "/" {
+    if path.starts_with(&format!("{API_PREFIX}/")) {
+        return dashboard_api(inner, request).await;
+    }
+    if path != "/" {
         return html(StatusCode::NOT_FOUND, pages::wall());
     }
-    if !inner.is_paired(request.headers()) {
+    let Some(device) = inner.device(request.headers()) else {
         return html(StatusCode::UNAUTHORIZED, pages::wall());
+    };
+    if device.admin {
+        return html(StatusCode::OK, DASHBOARD.to_string());
     }
     let mut apps: Vec<(String, String, &'static str)> = inner
         .upstreams
@@ -300,8 +340,8 @@ fn pair(inner: &Inner, request: &Request<Incoming>) -> Response<Body> {
         .uri()
         .query()
         .and_then(|query| query.split('&').find_map(|pair| pair.strip_prefix("code=")));
-    let label = match code.map(|code| inner.store.take_pair_code(&hash_token(code))) {
-        Some(Ok(Some(label))) => label,
+    let grant = match code.map(|code| inner.store.take_pair_code(&hash_token(code))) {
+        Some(Ok(Some(grant))) => grant,
         Some(Err(error)) => {
             warn!(%error, "pairing lookup failed");
             return html(StatusCode::INTERNAL_SERVER_ERROR, pages::pair_failed());
@@ -311,11 +351,17 @@ fn pair(inner: &Inner, request: &Request<Incoming>) -> Response<Body> {
     let token = random_token(32);
     let id = random_token(4);
     let token_hash = hash_token(&token);
-    if let Err(error) = inner.store.add_device(&id, label.as_deref(), &token_hash) {
+    if let Err(error) = inner.store.add_device(&id, &grant, &token_hash) {
         warn!(%error, "could not save paired device");
         return html(StatusCode::INTERNAL_SERVER_ERROR, pages::pair_failed());
     }
-    inner.devices.write().unwrap().insert(token_hash);
+    inner.devices.write().unwrap().insert(
+        token_hash,
+        DeviceAuth {
+            id,
+            admin: grant.admin,
+        },
+    );
     let mut response = Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, "/")
@@ -324,6 +370,63 @@ fn pair(inner: &Inner, request: &Request<Incoming>) -> Response<Body> {
         response = response.header(header::SET_COOKIE, cookie);
     }
     response.body(empty()).unwrap()
+}
+
+/// Runs a dashboard request through the control API, for admin devices only.
+async fn dashboard_api(inner: &Inner, mut request: Request<Incoming>) -> Response<Body> {
+    let Some(device) = inner.device(request.headers()) else {
+        return json_error(StatusCode::UNAUTHORIZED, "this device isn't paired");
+    };
+    if !device.admin {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "this device can open apps but not manage them. Pair it with `hedgehog pair --admin`",
+        );
+    }
+    if !request.headers().contains_key(API_HEADER) {
+        return json_error(StatusCode::FORBIDDEN, "missing x-hedgehog header");
+    }
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|origin| origin.to_str().ok());
+    if let Some(origin) = origin
+        && !inner.home_origins().iter().any(|allowed| allowed == origin)
+    {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "requests must come from the dashboard",
+        );
+    }
+    let Some(router) = inner.api.get().cloned() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "hedgehog is still starting",
+        );
+    };
+    let path = request
+        .uri()
+        .path_and_query()
+        .map(|path| path.as_str())
+        .unwrap_or("/")
+        .strip_prefix(API_PREFIX)
+        .unwrap_or("/")
+        .to_string();
+    match path.parse() {
+        Ok(uri) => *request.uri_mut() = uri,
+        Err(_) => return json_error(StatusCode::BAD_REQUEST, "bad path"),
+    }
+    request.headers_mut().remove(header::COOKIE);
+    request.extensions_mut().insert(CurrentDevice(device.id));
+    let response = match tower::ServiceExt::oneshot(router, request).await {
+        Ok(response) => response,
+        Err(never) => match never {},
+    };
+    let mut response = response.map(|body| body.map_err(BoxError::from).boxed_unsync());
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn handle_app(inner: &Inner, app: &str, request: Request<Incoming>) -> Response<Body> {
@@ -393,7 +496,7 @@ async fn proxy(
     let Some(client_upgrade) = client_upgrade else {
         let mut response = inner.client.request(request).await?;
         strip_hop_by_hop(response.headers_mut());
-        return Ok(response.map(|body| body.boxed()));
+        return Ok(response.map(|body| body.map_err(BoxError::from).boxed_unsync()));
     };
 
     // Upgrades (WebSockets) get their own connection so both sides can be
@@ -417,7 +520,7 @@ async fn proxy(
             }
         });
     }
-    Ok(response.map(|body| body.boxed()))
+    Ok(response.map(|body| body.map_err(BoxError::from).boxed_unsync()))
 }
 
 /// Drops hop-by-hop and spoofable forwarding headers, removes hedgehog's own
@@ -487,7 +590,20 @@ fn cookie_values<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Ite
 fn empty() -> Body {
     Full::new(Bytes::new())
         .map_err(|never| match never {})
-        .boxed()
+        .boxed_unsync()
+}
+
+fn json_error(status: StatusCode, message: &str) -> Response<Body> {
+    let body = serde_json::json!({ "error": message }).to_string();
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(
+            Full::new(Bytes::from(body))
+                .map_err(|never| match never {})
+                .boxed_unsync(),
+        )
+        .unwrap()
 }
 
 fn html(status: StatusCode, body: String) -> Response<Body> {
@@ -498,7 +614,7 @@ fn html(status: StatusCode, body: String) -> Response<Body> {
         .body(
             Full::new(Bytes::from(body))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         )
         .unwrap()
 }
@@ -506,6 +622,7 @@ fn html(status: StatusCode, body: String) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::PairGrant;
 
     #[test]
     fn strips_hedgehog_cookie_and_forwarding_headers() {
@@ -579,6 +696,15 @@ mod tests {
     }
 
     async fn get(port: u16, path: &str, cookie: Option<&str>) -> (StatusCode, HeaderMap, String) {
+        send(port, path, cookie, &[]).await
+    }
+
+    async fn send(
+        port: u16,
+        path: &str,
+        cookie: Option<&str>,
+        extra: &[(&str, &str)],
+    ) -> (StatusCode, HeaderMap, String) {
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
@@ -589,6 +715,9 @@ mod tests {
             .header(header::HOST, "localhost");
         if let Some(cookie) = cookie {
             request = request.header(header::COOKIE, cookie);
+        }
+        for (name, value) in extra {
+            request = request.header(*name, *value);
         }
         let response = sender
             .send_request(request.body(Full::new(Bytes::new())).unwrap())
@@ -625,12 +754,12 @@ mod tests {
         let (status, _, _) = get(app_port, "/", Some("hedgehog_device=forged")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
+        let grant = PairGrant {
+            label: Some("phone".into()),
+            admin: false,
+        };
         store
-            .add_pair_code(
-                &hash_token("code123"),
-                Some("phone"),
-                crate::secrets::now() + 60,
-            )
+            .add_pair_code(&hash_token("code123"), &grant, crate::secrets::now() + 60)
             .unwrap();
         let (status, headers, _) =
             get(gateway.home_port(), "/_hedgehog/pair?code=code123", None).await;
@@ -683,6 +812,88 @@ mod tests {
 
         gateway.remove_app("budget");
         assert!(gateway.app_ports().is_empty());
+    }
+
+    /// Pairs a device through the real pairing endpoint; returns its cookie.
+    async fn pair_device(gateway: &Gateway, store: &Store, code: &str, admin: bool) -> String {
+        let grant = PairGrant { label: None, admin };
+        store
+            .add_pair_code(&hash_token(code), &grant, crate::secrets::now() + 60)
+            .unwrap();
+        let (_, headers, _) = get(
+            gateway.home_port(),
+            &format!("{PAIR_PATH}?code={code}"),
+            None,
+        )
+        .await;
+        let set_cookie = headers[header::SET_COOKIE].to_str().unwrap();
+        set_cookie.split(';').next().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn dashboard_is_for_admin_devices_and_same_origin_only() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let gateway = Gateway::start(store.clone()).await.unwrap();
+        gateway.set_api(axum::Router::new().route(
+            "/v1/whoami",
+            axum::routing::get(
+                |axum::Extension(CurrentDevice(id)): axum::Extension<CurrentDevice>,
+                 headers: HeaderMap| async move {
+                    format!("{id} cookie={}", headers.contains_key(header::COOKIE))
+                },
+            ),
+        ));
+        let home = gateway.home_port();
+        let admin = pair_device(&gateway, &store, "admin-code", true).await;
+        let viewer = pair_device(&gateway, &store, "viewer-code", false).await;
+        let api = format!("{API_PREFIX}/v1/whoami");
+        let marker = [(API_HEADER, "1")];
+
+        // The page: dashboard for admins, the plain app list for others.
+        let (status, _, body) = get(home, "/", Some(&admin)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("Pair a device"), "admins get the dashboard");
+        let (status, _, body) = get(home, "/", Some(&viewer)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body.contains("Pair a device"), "viewers get the app list");
+
+        // The API: admin only, with the marker header.
+        let (status, _, _) = send(home, &api, None, &marker).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = send(home, &api, Some(&viewer), &marker).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = send(home, &api, Some(&admin), &[]).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "the marker header is required"
+        );
+        let (status, _, body) = send(home, &api, Some(&admin), &marker).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.ends_with("cookie=false"),
+            "handlers never see the cookie"
+        );
+        let device_id = body.split(' ').next().unwrap().to_string();
+        assert!(
+            store
+                .devices()
+                .unwrap()
+                .iter()
+                .any(|d| d.id == device_id && d.admin)
+        );
+
+        // Requests from other origins, like your own apps' pages, are refused.
+        let foreign = [
+            (API_HEADER, "1"),
+            ("origin", "https://budget.abc.opentunnel.xyz"),
+        ];
+        let (status, _, _) = send(home, &api, Some(&admin), &foreign).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let own = format!("http://127.0.0.1:{home}");
+        let same = [(API_HEADER, "1"), ("origin", own.as_str())];
+        let (status, _, _) = send(home, &api, Some(&admin), &same).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[test]
