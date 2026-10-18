@@ -147,6 +147,20 @@ pub fn install(paths: &Paths, exe: &Path) -> Result<PathBuf> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
+    // On macOS 26 a freshly bootstrapped Background job can load without ever
+    // spawning, despite RunAtLoad, so start it explicitly. Without -k: there's
+    // nothing to kill yet, and a job that did spawn is left alone.
+    match Command::new("launchctl")
+        .args(["kickstart", &domain_target()?])
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => eprintln!(
+            "warning: launchctl kickstart failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => eprintln!("warning: launchctl kickstart failed: {error}"),
+    }
     Ok(plist)
 }
 
