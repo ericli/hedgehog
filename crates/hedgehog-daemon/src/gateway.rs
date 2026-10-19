@@ -387,6 +387,10 @@ fn pair(inner: &Inner, request: &Request<Incoming>) -> Response<Body> {
             warn!(%error, "pairing lookup failed");
             return html(StatusCode::INTERNAL_SERVER_ERROR, pages::pair_failed());
         }
+        // A used or expired link opened again (a reload, a restored tab, a
+        // link from history) in a browser that's still paired: carry on home
+        // rather than saying pairing failed, which reads as being signed out.
+        _ if inner.device(request.headers()).is_some() => return see_home(),
         _ => return html(StatusCode::FORBIDDEN, pages::pair_failed()),
     };
     // A browser that is already paired with at least these rights just
@@ -395,12 +399,7 @@ fn pair(inner: &Inner, request: &Request<Incoming>) -> Response<Body> {
         .device(request.headers())
         .is_some_and(|device| device.admin || !grant.admin)
     {
-        return Response::builder()
-            .status(StatusCode::SEE_OTHER)
-            .header(header::LOCATION, "/")
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(empty())
-            .unwrap();
+        return see_home();
     }
     let token = random_token(32);
     let id = random_token(4);
@@ -416,14 +415,20 @@ fn pair(inner: &Inner, request: &Request<Incoming>) -> Response<Body> {
             admin: grant.admin,
         },
     );
-    let mut response = Response::builder()
+    let mut response = see_home();
+    if let Ok(cookie) = HeaderValue::from_str(&inner.device_cookie(&token)) {
+        response.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
+    response
+}
+
+fn see_home() -> Response<Body> {
+    Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, "/")
-        .header(header::CACHE_CONTROL, "no-store");
-    if let Ok(cookie) = HeaderValue::from_str(&inner.device_cookie(&token)) {
-        response = response.header(header::SET_COOKIE, cookie);
-    }
-    response.body(empty()).unwrap()
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(empty())
+        .unwrap()
 }
 
 /// Runs a dashboard request through the control API, for admin devices only.
@@ -839,6 +844,18 @@ mod tests {
         assert!(device.starts_with("hedgehog_device="));
         let (status, _, _) = get(gateway.home_port(), "/_hedgehog/pair?code=code123", None).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "codes are single use");
+        let (status, headers, _) = get(
+            gateway.home_port(),
+            "/_hedgehog/pair?code=code123",
+            Some(&device),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::SEE_OTHER,
+            "a paired browser reopening a used link just goes home"
+        );
+        assert!(!headers.contains_key(header::SET_COOKIE));
 
         let cookies = format!("theme=dark; {device}");
         let (status, _, body) = get(app_port, "/", Some(&cookies)).await;
