@@ -10,6 +10,7 @@ use hedgehog_core::api::{
 };
 use hedgehog_core::env::{EnvMap, read_dotenv_file};
 use hedgehog_core::names::{app_name_from_dir, is_valid_app_name, repo_name_from_git_url};
+use hedgehog_core::sprite::{self, Mood};
 use hedgehog_core::{API_PORT, Manifest, Paths};
 use reqwest::Method;
 
@@ -642,39 +643,61 @@ fn tick(ok: bool) -> String {
 
 async fn status(client: &Client) -> Result<()> {
     let status: Status = client.get("/v1/status").await?;
-    print_status(client, &status);
+    let apps: Vec<AppInfo> = client.get("/v1/apps").await.unwrap_or_default();
+    print_status(client, &status, Some(&apps));
     Ok(())
 }
 
-fn print_status(client: &Client, status: &Status) {
-    println!(
+/// How the hedgehog feels: worried if anything failed, sleepy with no apps.
+fn mood(status: &Status, apps: &[AppInfo]) -> Mood {
+    let tunnel_trouble = matches!(status.tunnel.state.as_str(), "stopped" | "reconnecting");
+    let failing = apps
+        .iter()
+        .any(|app| app.status == AppStatus::Failed || app.last_error.is_some());
+    if tunnel_trouble || failing || status.backup_error.is_some() {
+        Mood::Worried
+    } else if apps.is_empty() {
+        Mood::Sleepy
+    } else {
+        Mood::Happy
+    }
+}
+
+/// Prints the status, with the hedgehog beside it (in its current mood) when
+/// `apps` is known and this is a colour terminal.
+fn print_status(client: &Client, status: &Status, apps: Option<&[AppInfo]>) {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!(
         "{} {} on {}",
         bold("hedgehog"),
         status.version,
         client.label
-    );
-    println!("  docker    {}", tick(status.docker));
-    println!(
+    ));
+    lines.push(format!("  docker    {}", tick(status.docker)));
+    lines.push(format!(
         "  railpack  {}",
         if status.railpack {
             green("ok")
         } else {
             yellow("missing (needed for apps without a Dockerfile)")
         }
-    );
+    ));
     let tunnel = match status.tunnel.state.as_str() {
         "connected" => green("connected"),
         "off" => dim("off"),
         other => yellow(other),
     };
-    println!("  tunnel    {tunnel}");
+    lines.push(format!("  tunnel    {tunnel}"));
     if let Some(error) = &status.tunnel.error {
-        println!("            {}", dim(error));
+        lines.push(format!("            {}", dim(error)));
     }
     if let Some(url) = &status.home_url {
-        println!("  home      {url}");
+        lines.push(format!("  home      {url}"));
     }
-    println!("  apps      {} in {}", status.apps, status.apps_dir);
+    lines.push(format!(
+        "  apps      {} in {}",
+        status.apps, status.apps_dir
+    ));
     let last = status
         .last_backup
         .map(|at| format!("last {}", ago(at)))
@@ -684,9 +707,28 @@ fn print_status(client: &Client, status: &Status) {
         .as_deref()
         .map(|folder| format!(", copied to {folder}"))
         .unwrap_or_else(|| ", on this Mac only".to_string());
-    println!("  backups   {last}{copied}");
+    lines.push(format!("  backups   {last}{copied}"));
     if let Some(error) = &status.backup_error {
-        println!("            {}", red(error));
+        lines.push(format!("            {}", red(error)));
+    }
+    let mood = apps.map(|apps| mood(status, apps));
+    if let Some(mood) = mood {
+        lines[0].push_str(&dim(&format!(" · {}", mood.describe().to_lowercase())));
+    }
+    let pet = mood
+        .filter(|_| std::io::IsTerminal::is_terminal(&std::io::stdout()))
+        .map(sprite::terminal);
+    let Some(pet) = pet else {
+        for line in lines {
+            println!("{line}");
+        }
+        return;
+    };
+    let blank = " ".repeat(sprite::WIDTH);
+    for row in 0..pet.len().max(lines.len()) {
+        let left = pet.get(row).unwrap_or(&blank);
+        let right = lines.get(row).map(String::as_str).unwrap_or_default();
+        println!("{left}  {right}");
     }
 }
 
@@ -830,7 +872,7 @@ async fn doctor(paths: &Paths, remote: Option<&str>) -> Result<()> {
         Ok(client) => match client.get::<Status>("/v1/status").await {
             Ok(status) => {
                 println!();
-                print_status(&client, &status);
+                print_status(&client, &status, None);
             }
             Err(error) => println!("\n{} {error:#}", yellow("daemon:")),
         },
@@ -1123,7 +1165,7 @@ async fn setup(paths: &Paths) -> Result<()> {
         .await
         .unwrap_or(status)
     };
-    print_status(&client, &status);
+    print_status(&client, &status, Some(&[]));
 
     println!("\n{}", bold("Pair your phone"));
     let response: PairResponse = client

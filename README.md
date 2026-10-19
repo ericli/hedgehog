@@ -1,4 +1,6 @@
-# 🦔 hedgehog
+<img src="assets/hedgehog.svg" width="126" height="78" alt="A pixel-art hedgehog">
+
+# hedgehog
 
 **Drop a repo on your Mac, get a private URL.**
 

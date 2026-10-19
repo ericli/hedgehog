@@ -5,6 +5,7 @@ pub mod env;
 pub mod manifest;
 pub mod names;
 pub mod paths;
+pub mod sprite;
 
 pub use manifest::Manifest;
 pub use paths::Paths;

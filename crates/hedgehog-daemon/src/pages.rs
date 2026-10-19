@@ -1,6 +1,8 @@
 //! The few HTML pages the gateway serves itself, in the same quiet style as
 //! the dashboard: white page, black type, hairlines, square blocks.
 
+use hedgehog_core::sprite::{self, Mood};
+
 const STYLE: &str = r#"
 :root {
   --gray0: #FFF; --gray1: #F7F7F7; --gray2: #EDEDED; --gray3: #DEDEDE; --gray4: #999; --gray5: #696969; --gray7: #000;
@@ -15,7 +17,14 @@ const STYLE: &str = r#"
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--gray0); color: var(--gray7);
   font: 0.9rem/1.45 "Helvetica Neue", Helvetica, Arial, sans-serif; }
-.top { padding: 15px 20px; font-weight: bold; }
+.top { display: flex; align-items: center; gap: 8px; padding: 15px 20px; font-weight: bold; }
+.top svg { display: block; width: 28px; height: 18px; }
+.pet { display: flex; justify-content: center; margin-bottom: 15px; }
+.pet svg { display: block; width: 105px; height: 65px; animation: bob 1.6s infinite; }
+@keyframes bob { 0%, 49% { transform: translateY(0); } 50%, 100% { transform: translateY(-3px); } }
+.lid { animation: blink 5s infinite; }
+@keyframes blink { 0%, 92%, 100% { opacity: 0; } 93%, 96% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pet svg, .lid { animation: none; } }
 main { max-width: 1240px; margin: 0 auto; padding: 0 20px 80px; }
 .channel { text-align: center; padding: 45px 0 35px; }
 h1 { margin: 0; font-size: 2rem; font-weight: normal; letter-spacing: -0.01em; }
@@ -63,25 +72,37 @@ fn page(title: &str, body: &str) -> String {
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta name=\"color-scheme\" content=\"light dark\">\
+         <link rel=\"icon\" href=\"{favicon}\">\
          <title>{}</title><style>{STYLE}</style></head>\
-         <body><div class=\"top\">🦔 hedgehog</div><main>{body}</main></body></html>",
-        escape(title)
+         <body><div class=\"top\">{small}hedgehog</div><main>{body}</main></body></html>",
+        escape(title),
+        favicon = sprite::favicon(),
+        small = sprite::svg(Mood::Happy, 1),
     )
 }
 
-fn note(title: &str, paragraphs: &[&str]) -> String {
+fn pet(mood: Mood) -> String {
+    format!("<div class=\"pet\">{}</div>", sprite::svg(mood, 1))
+}
+
+fn note(mood: Mood, title: &str, paragraphs: &[&str]) -> String {
     let body: String = paragraphs
         .iter()
         .map(|text| format!("<p>{text}</p>"))
         .collect();
     page(
         title,
-        &format!("<div class=\"note\"><h1>{}</h1>{body}</div>", escape(title)),
+        &format!(
+            "<div class=\"note\">{}<h1>{}</h1>{body}</div>",
+            pet(mood),
+            escape(title)
+        ),
     )
 }
 
 pub fn wall() -> String {
     note(
+        Mood::Happy,
         "This is a private app",
         &[
             "It's running on someone's hedgehog, and this device isn't paired with it.",
@@ -92,6 +113,7 @@ pub fn wall() -> String {
 
 pub fn unavailable(app: &str, reason: &str) -> String {
     note(
+        Mood::Sleepy,
         &format!("{app} isn't running"),
         &[
             &escape(reason),
@@ -105,6 +127,7 @@ pub fn unavailable(app: &str, reason: &str) -> String {
 
 pub fn pair_failed() -> String {
     note(
+        Mood::Worried,
         "That pairing link didn't work",
         &[
             "Links work once and expire after 10 minutes. Run <code>hedgehog pair</code> again for a new one.",
@@ -134,8 +157,13 @@ pub fn home(apps: &[AppLink]) -> String {
     page(
         "hedgehog",
         &format!(
-            "<header class=\"channel\"><h1>Apps</h1><p>{count} on this hedgehog</p></header>\
-             <div class=\"grid\">{blocks}</div>"
+            "<header class=\"channel\">{pet}<h1>Apps</h1><p>{count} on this hedgehog</p></header>\
+             <div class=\"grid\">{blocks}</div>",
+            pet = pet(if apps.is_empty() {
+                Mood::Sleepy
+            } else {
+                Mood::Happy
+            }),
         ),
     )
 }

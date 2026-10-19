@@ -42,6 +42,19 @@ pub const API_HEADER: &str = "x-hedgehog";
 const COOKIE_MAX_AGE: u64 = 400 * 24 * 60 * 60;
 const DASHBOARD: &str = include_str!("dashboard.html");
 
+/// The dashboard with the hedgehog sprites filled in.
+static DASHBOARD_PAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use hedgehog_core::sprite::{self, Mood};
+    let sprites = serde_json::json!({
+        "happy": sprite::svg(Mood::Happy, 1),
+        "sleepy": sprite::svg(Mood::Sleepy, 1),
+        "worried": sprite::svg(Mood::Worried, 1),
+    });
+    DASHBOARD
+        .replace("__FAVICON__", &sprite::favicon())
+        .replace("__SPRITES__", &sprites.to_string())
+});
+
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Body = UnsyncBoxBody<Bytes, BoxError>;
 
@@ -342,7 +355,7 @@ async fn handle_home(inner: &Inner, request: Request<Incoming>) -> Response<Body
         return html(StatusCode::UNAUTHORIZED, pages::wall());
     };
     if device.admin {
-        return html(StatusCode::OK, DASHBOARD.to_string());
+        return html(StatusCode::OK, DASHBOARD_PAGE.clone());
     }
     let mut apps: Vec<pages::AppLink> = inner
         .upstreams
