@@ -53,6 +53,8 @@ pub struct Daemon {
     pub paths: Paths,
     pub store: Arc<Store>,
     pub docker: Docker,
+    /// Kept by the supervisor's pings; see [`docker::Health`].
+    pub docker_health: docker::Health,
     pub postgres: Postgres,
     pub gateway: Gateway,
     pub tunnel: TunnelManager,
@@ -181,6 +183,7 @@ pub async fn run(paths: Paths, options: Options) -> Result<()> {
         paths,
         store,
         docker,
+        docker_health: docker::Health::default(),
         gateway,
         token,
         locks: Mutex::default(),

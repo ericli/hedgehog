@@ -119,12 +119,11 @@ impl Postgres {
                 let options = CreateContainerOptionsBuilder::default()
                     .name(container)
                     .build();
-                match self
+                let create = self
                     .docker
                     .api()
-                    .create_container(Some(options), self.container_body(&password))
-                    .await
-                {
+                    .create_container(Some(options), self.container_body(&password));
+                match crate::docker::bounded(Duration::from_secs(30), create).await {
                     // Something else (another hedgehog, or a CLI) just made it.
                     Ok(_)
                     | Err(bollard::errors::Error::DockerResponseServerError {

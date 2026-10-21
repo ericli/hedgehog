@@ -11,7 +11,12 @@ pub struct Status {
     /// The hedgehog home page (app list, device pairing).
     pub home_url: Option<String>,
     pub apps: usize,
+    /// Docker answered just now.
     pub docker: bool,
+    /// Unix seconds since Docker stopped answering, once it has been
+    /// silent for about a minute.
+    #[serde(default)]
+    pub docker_down_since: Option<i64>,
     pub railpack: bool,
     pub apps_dir: String,
     /// Unix seconds of the last nightly or manual backup.
@@ -68,7 +73,12 @@ impl AppStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppInfo {
     pub name: String,
+    /// What hedgehog last recorded. See `status_unknown`.
     pub status: AppStatus,
+    /// Docker isn't answering, so whether a "running" app is really up is
+    /// unknown (it probably isn't).
+    #[serde(default)]
+    pub status_unknown: bool,
     pub url: Option<String>,
     pub public: bool,
     pub source_dir: String,
@@ -179,4 +189,28 @@ pub struct BackupReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Older daemons don't send the Docker health fields.
+    #[test]
+    fn reads_responses_from_older_daemons() {
+        let status: Status = serde_json::from_str(
+            r#"{"version":"0.1.0","tunnel":{"state":"off","hostname":null,"error":null},
+                "home_url":null,"apps":0,"docker":true,"railpack":true,"apps_dir":"/apps"}"#,
+        )
+        .unwrap();
+        assert_eq!(status.docker_down_since, None);
+        let app: AppInfo = serde_json::from_str(
+            r#"{"name":"notes","status":"running","url":null,"public":false,
+                "source_dir":"/apps/notes","builder":null,"revision":null,
+                "deployed_at":null,"last_error":null}"#,
+        )
+        .unwrap();
+        assert_eq!(app.status, AppStatus::Running);
+        assert!(!app.status_unknown);
+    }
 }

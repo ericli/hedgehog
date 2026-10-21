@@ -15,7 +15,7 @@ use tracing::{info, warn};
 
 use crate::Daemon;
 use crate::deploy::Source;
-use crate::docker::ContainerState;
+use crate::docker::{ContainerState, DOWN_AFTER, HealthChange};
 use crate::gateway::Upstream;
 use crate::git::revision as git_revision;
 use crate::secrets::now;
@@ -33,12 +33,17 @@ pub async fn run(daemon: Arc<Daemon>) {
     let mut last_reconcile = Instant::now();
     loop {
         tokio::time::sleep(SCAN_EVERY).await;
-        if let Err(error) = scanner.scan(&daemon).await {
-            warn!("scanning apps failed: {error:#}");
-        }
-        if last_reconcile.elapsed() >= RECONCILE_EVERY {
-            reconcile(&daemon, false).await;
-            last_reconcile = Instant::now();
+        let (docker_ok, came_back) = check_docker(&daemon).await;
+        // Deploys and reconciling need Docker. While it isn't answering they
+        // wait, rather than fail or pile up behind timeouts.
+        if docker_ok {
+            if let Err(error) = scanner.scan(&daemon).await {
+                warn!("scanning apps failed: {error:#}");
+            }
+            if came_back || last_reconcile.elapsed() >= RECONCILE_EVERY {
+                reconcile(&daemon, false).await;
+                last_reconcile = Instant::now();
+            }
         }
         maybe_backup(&daemon);
         let max = crate::env_number("HEDGEHOG_LOG_MAX_BYTES", 10 * 1024 * 1024);
@@ -46,6 +51,30 @@ pub async fn run(daemon: Arc<Daemon>) {
             info!("rotated the daemon log");
         }
     }
+}
+
+/// Pings Docker and records the result, logging once when it goes down and
+/// once when it comes back. Returns whether it answered, and whether it just
+/// came back.
+async fn check_docker(daemon: &Daemon) -> (bool, bool) {
+    let ok = daemon.docker.ping().await;
+    match daemon.docker_health.record(ok, Instant::now(), now()) {
+        Some(HealthChange::WentDown { .. }) => warn!(
+            "Docker hasn't answered for {}s, so apps are probably down. \
+             Quitting and reopening Docker Desktop (or OrbStack) usually fixes it",
+            DOWN_AFTER.as_secs()
+        ),
+        Some(HealthChange::CameBack { down_for }) => {
+            let minutes = down_for.as_secs() / 60;
+            info!(
+                down_for = %format!("{}h{}m", minutes / 60, minutes % 60),
+                "Docker is answering again; bringing apps back"
+            );
+            return (true, true);
+        }
+        None => {}
+    }
+    (ok, false)
 }
 
 /// Cheap "has this folder changed" signal: entry count plus newest mtime of

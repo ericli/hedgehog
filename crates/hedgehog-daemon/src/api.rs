@@ -17,7 +17,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use futures_util::StreamExt;
 use hedgehog_core::api::{
-    AppInfo, BackupReport, BackupRequest, CreateApp, DeployEvent, EnvUpdate, ErrorBody,
+    AppInfo, AppStatus, BackupReport, BackupRequest, CreateApp, DeployEvent, EnvUpdate, ErrorBody,
     PairRequest, PairResponse, PublicUpdate, Status, WebhookInfo,
 };
 use hedgehog_core::names::is_valid_app_name;
@@ -200,12 +200,15 @@ pub async fn tailscale_ip() -> Option<IpAddr> {
 }
 
 async fn status(State(daemon): State<AppState>) -> ApiResult<Json<Status>> {
+    // Known to be down: don't wait for another ping to time out.
+    let docker_down_since = daemon.docker_health.down_since();
     Ok(Json(Status {
         version: VERSION.to_string(),
         tunnel: daemon.tunnel.info(),
         home_url: Some(daemon.gateway.home_url()),
         apps: daemon.store.apps()?.len(),
-        docker: daemon.docker.ping().await,
+        docker: docker_down_since.is_none() && daemon.docker.ping().await,
+        docker_down_since,
         railpack: build::railpack_installed().await,
         apps_dir: daemon.paths.apps.display().to_string(),
         last_backup: daemon
@@ -218,9 +221,15 @@ async fn status(State(daemon): State<AppState>) -> ApiResult<Json<Status>> {
     }))
 }
 
-fn app_info(daemon: &Daemon, app: AppRecord) -> AppInfo {
+/// While Docker is down, "running" is only what the database remembers.
+fn status_unknown(app: &AppRecord, docker_down: bool) -> bool {
+    docker_down && app.status == AppStatus::Running && !app.stopped
+}
+
+fn app_info(daemon: &Daemon, app: AppRecord, docker_down: bool) -> AppInfo {
     let manifest = Manifest::load(&app.source_dir).unwrap_or_default();
     AppInfo {
+        status_unknown: status_unknown(&app, docker_down),
         url: daemon.gateway.app_url(&app.name),
         public: app.public.unwrap_or(manifest.public()),
         source_dir: app.source_dir.display().to_string(),
@@ -236,8 +245,11 @@ fn app_info(daemon: &Daemon, app: AppRecord) -> AppInfo {
 
 async fn list_apps(State(daemon): State<AppState>) -> ApiResult<Json<Vec<AppInfo>>> {
     let apps = daemon.store.apps()?;
+    let docker_down = daemon.docker_health.down_since().is_some();
     Ok(Json(
-        apps.into_iter().map(|app| app_info(&daemon, app)).collect(),
+        apps.into_iter()
+            .map(|app| app_info(&daemon, app, docker_down))
+            .collect(),
     ))
 }
 
@@ -609,6 +621,35 @@ async fn revoke_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_record(status: AppStatus, stopped: bool) -> AppRecord {
+        AppRecord {
+            name: "notes".into(),
+            source_dir: "/tmp/notes".into(),
+            public: None,
+            stopped,
+            status,
+            container: Some("hedgehog-notes-1".into()),
+            image: None,
+            builder: None,
+            revision: None,
+            deployed_at: None,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn running_apps_are_unknown_while_docker_is_down() {
+        assert!(status_unknown(&app_record(AppStatus::Running, false), true));
+        assert!(!status_unknown(
+            &app_record(AppStatus::Running, false),
+            false
+        ));
+        // These don't claim anything about a live container.
+        assert!(!status_unknown(&app_record(AppStatus::Stopped, true), true));
+        assert!(!status_unknown(&app_record(AppStatus::Failed, false), true));
+        assert!(!status_unknown(&app_record(AppStatus::Running, true), true));
+    }
 
     #[test]
     fn validates_env_keys() {

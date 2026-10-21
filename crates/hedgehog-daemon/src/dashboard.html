@@ -65,6 +65,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 0 20px 80px; }
 .channel { text-align: center; padding: 45px 0 35px; }
 .channel h1 { margin: 0; font-size: var(--fs7); font-weight: normal; letter-spacing: -0.01em; }
 .channel p { margin: 6px 0 0; color: var(--gray5); }
+.channel .notice { max-width: 640px; margin: 15px auto 0; }
 
 /* Block grid */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 35px 25px; }
@@ -214,6 +215,7 @@ dl.facts dd { margin: 0; overflow-wrap: anywhere; }
     <div class="pet" id="pet"></div>
     <h1>Apps</h1>
     <p id="app-summary">&nbsp;</p>
+    <p class="notice bad" id="docker-notice" role="alert" hidden></p>
   </header>
 
   <div class="grid" id="apps"></div>
@@ -457,7 +459,17 @@ async function readLines(response, onLine) {
 
 /* ---------- Overview ---------- */
 
+// Clock time for Unix seconds, with the date when it isn't today.
+function clock(seconds) {
+  const date = new Date(seconds * 1000);
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (date.toDateString() === new Date().toDateString()) return time;
+  return `${date.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
+// Whether a running app is really up is unknown while Docker isn't answering.
 function statusText(app) {
+  if (app.status_unknown) return "unknown";
   if (app.status === "running") return app.deployed_at ? `running · ${ago(app.deployed_at)}` : "running";
   return app.status;
 }
@@ -473,10 +485,11 @@ function renderTunnel() {
 
 function appCell(app) {
   const access = app.public ? "public" : "private";
-  const block = el("button", { class: `block ${access}`, "aria-label": `${app.name}, ${app.status}`, onclick: () => openApp(app.name) },
+  const alarming = app.status === "failed" || app.status_unknown;
+  const block = el("button", { class: `block ${access}`, "aria-label": `${app.name}, ${statusText(app)}`, onclick: () => openApp(app.name) },
     app.last_error && app.status !== "failed" ? el("span", { class: "flag", text: "last deploy failed" }) : null,
     el("div", { class: "title", text: app.name }),
-    el("div", { class: "state" + (app.status === "building" ? " building" : "") + (app.status === "failed" ? " failed-text" : ""), text: statusText(app) }),
+    el("div", { class: "state" + (app.status === "building" ? " building" : "") + (alarming ? " failed-text" : ""), text: statusText(app) }),
   );
   const host = (app.url || "").replace(/^https?:\/\//, "");
   return el("div", { class: "cell" }, block,
@@ -494,7 +507,7 @@ function addCell() {
 function renderApps() {
   const grid = $("apps");
   grid.replaceChildren(addCell(), ...state.apps.map(appCell));
-  const running = state.apps.filter((app) => app.status === "running").length;
+  const running = state.apps.filter((app) => app.status === "running" && !app.status_unknown).length;
   const failing = state.apps.filter((app) => app.last_error).length;
   const parts = [`${state.apps.length} app${state.apps.length === 1 ? "" : "s"}`];
   if (state.apps.length) parts.push(`${running} running`);
@@ -520,7 +533,7 @@ function currentMood() {
   const status = state.status;
   if (!status) return "happy";
   const tunnelTrouble = ["stopped", "reconnecting"].includes(status.tunnel?.state);
-  if (tunnelTrouble || status.backup_error || state.apps.some((app) => app.status === "failed" || app.last_error)) return "worried";
+  if (!status.docker || tunnelTrouble || status.backup_error || state.apps.some((app) => app.status === "failed" || app.last_error)) return "worried";
   return state.apps.length ? "happy" : "sleepy";
 }
 
@@ -535,10 +548,21 @@ function renderPet() {
   $("sprite-small").innerHTML = SPRITES[mood];
 }
 
+// Only once Docker has been silent for a while, not for one slow ping.
+function renderDocker() {
+  const since = state.status?.docker_down_since;
+  const notice = $("docker-notice");
+  notice.hidden = !since;
+  notice.textContent = since
+    ? `Docker hasn't answered since ${clock(since)}, so your apps are probably down. ` +
+      "Quitting and reopening Docker Desktop on the hedgehog Mac usually fixes it."
+    : "";
+}
+
 function renderFooter() {
   const status = state.status;
   if (!status) return;
-  const parts = [`hedgehog ${status.version}`, status.docker ? "Docker ok" : "Docker isn't running"];
+  const parts = [`hedgehog ${status.version}`, status.docker ? "Docker ok" : "Docker isn't answering"];
   if (!status.railpack) parts.push("Railpack missing");
   parts.push(status.last_backup ? `backed up ${ago(status.last_backup)}` : "no backups yet");
   if (status.backup_error) parts.push("last backup had problems (see hedgehog status)");
@@ -554,7 +578,7 @@ async function refresh() {
     const [status, apps, devices] = await Promise.all([getJson("/status"), getJson("/apps"), getJson("/devices")]);
     Object.assign(state, { status, apps, devices });
     refreshFailures = 0;
-    renderTunnel(); renderApps(); renderDevices(); renderFooter(); renderPet();
+    renderTunnel(); renderDocker(); renderApps(); renderDevices(); renderFooter(); renderPet();
     if (state.selected) renderAppHeader();
   } catch (error) {
     refreshFailures += 1;
@@ -585,7 +609,7 @@ function renderAppHeader() {
   $("app-name").textContent = app.name;
   const status = $("app-status");
   status.textContent = `${app.public ? "public" : "private"} · ${statusText(app)}`;
-  status.style.color = app.status === "failed" ? "var(--alert)" : app.public ? "var(--green3)" : "var(--red3)";
+  status.style.color = app.status === "failed" || app.status_unknown ? "var(--alert)" : app.public ? "var(--green3)" : "var(--red3)";
   const url = safeUrl(app.url);
   $("app-url").textContent = app.url || "";
   if (url) $("app-url").href = url; else $("app-url").removeAttribute("href");

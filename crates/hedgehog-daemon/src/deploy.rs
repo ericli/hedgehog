@@ -413,7 +413,13 @@ impl Daemon {
     }
 
     async fn recent_logs(&self, container: &str, lines: usize) -> String {
-        let chunks: Vec<_> = self.docker.logs(container, false, lines).collect().await;
+        let logs = self
+            .docker
+            .logs(container, false, lines)
+            .collect::<Vec<_>>();
+        let chunks = tokio::time::timeout(Duration::from_secs(10), logs)
+            .await
+            .unwrap_or_default();
         let text: String = chunks
             .into_iter()
             .filter_map(Result::ok)

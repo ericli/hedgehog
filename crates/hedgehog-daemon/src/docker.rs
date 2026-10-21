@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use bollard::models::{
@@ -24,6 +26,34 @@ pub const NETWORK: &str = "hedgehog";
 pub const LABEL_APP: &str = "dev.hedgehog.app";
 pub const LABEL_DEPLOY: &str = "dev.hedgehog.deploy";
 
+/// A healthy engine answers a ping in milliseconds; a wedged one (Docker
+/// Desktop with its VM stopped) accepts the connection and never answers.
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
+/// Inspecting and listing.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Creating, starting, stopping, and removing containers. Stopping gives
+/// the app 10 s to exit before Docker kills it.
+const CHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long pings must keep failing before Docker counts as down.
+pub const DOWN_AFTER: Duration = Duration::from_secs(60);
+
+/// Gives up on a Docker API call after `limit`, so a wedged engine can't hang
+/// the daemon. Builds, pulls, `exec`, and log streams aren't bounded: they
+/// can rightly take minutes.
+pub async fn bounded<T>(
+    limit: Duration,
+    call: impl Future<Output = Result<T, bollard::errors::Error>>,
+) -> Result<T, bollard::errors::Error> {
+    tokio::time::timeout(limit, call).await.unwrap_or_else(|_| {
+        Err(bollard::errors::Error::IOError {
+            err: std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("Docker didn't answer within {}s", limit.as_secs()),
+            ),
+        })
+    })
+}
+
 #[derive(Clone)]
 pub struct Docker {
     api: bollard::Docker,
@@ -43,6 +73,74 @@ pub enum ContainerState {
     Stopped {
         exit_code: Option<i64>,
     },
+}
+
+/// Whether Docker has been answering the supervisor's pings. Docker Desktop
+/// can stop its VM (a full disk did it once) while everything in hedgehog's
+/// database still says "running", so this is what tells the truth.
+#[derive(Default)]
+pub struct Health(Mutex<HealthState>);
+
+#[derive(Debug, Default, Clone, Copy)]
+enum HealthState {
+    #[default]
+    Up,
+    /// Pings have failed since `since` (`unix` in Unix seconds), but not
+    /// for long enough to call it down.
+    Failing {
+        since: Instant,
+        unix: i64,
+    },
+    Down {
+        since: Instant,
+        unix: i64,
+    },
+}
+
+/// A change in Docker's health worth one line in the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthChange {
+    /// Pings have failed for [`DOWN_AFTER`]; the first failed at `since`
+    /// (Unix seconds).
+    WentDown { since: i64 },
+    /// Docker answered again after being down for `down_for`.
+    CameBack { down_for: Duration },
+}
+
+impl Health {
+    /// Records one ping result, taken at `at` (`unix` in Unix seconds).
+    pub fn record(&self, ok: bool, at: Instant, unix: i64) -> Option<HealthChange> {
+        let mut state = self.0.lock().unwrap();
+        let (next, change) = match (*state, ok) {
+            (HealthState::Down { since, .. }, true) => (
+                HealthState::Up,
+                Some(HealthChange::CameBack {
+                    down_for: at.saturating_duration_since(since),
+                }),
+            ),
+            (_, true) => (HealthState::Up, None),
+            (HealthState::Up, false) => (HealthState::Failing { since: at, unix }, None),
+            (HealthState::Failing { since, unix }, false)
+                if at.saturating_duration_since(since) >= DOWN_AFTER =>
+            {
+                (
+                    HealthState::Down { since, unix },
+                    Some(HealthChange::WentDown { since: unix }),
+                )
+            }
+            (failing_or_down, false) => (failing_or_down, None),
+        };
+        *state = next;
+        change
+    }
+
+    /// When Docker stopped answering (Unix seconds), if it counts as down.
+    pub fn down_since(&self) -> Option<i64> {
+        match *self.0.lock().unwrap() {
+            HealthState::Down { unix, .. } => Some(unix),
+            _ => None,
+        }
+    }
 }
 
 /// Container output is capped (Docker's default keeps it forever): up to
@@ -161,7 +259,7 @@ impl Docker {
     }
 
     pub async fn ping(&self) -> bool {
-        self.api.ping().await.is_ok()
+        bounded(PING_TIMEOUT, self.api.ping()).await.is_ok()
     }
 
     /// A `docker` CLI command pointed at the same engine.
@@ -175,27 +273,27 @@ impl Docker {
     }
 
     pub async fn ensure_network(&self) -> Result<()> {
-        if self
+        let inspect = self
             .api
-            .inspect_network(NETWORK, None::<InspectNetworkOptions>)
-            .await
-            .is_ok()
-        {
+            .inspect_network(NETWORK, None::<InspectNetworkOptions>);
+        if bounded(QUERY_TIMEOUT, inspect).await.is_ok() {
             return Ok(());
         }
-        self.api
-            .create_network(NetworkCreateRequest {
-                name: NETWORK.to_string(),
-                driver: Some("bridge".to_string()),
-                ..Default::default()
-            })
+        let create = self.api.create_network(NetworkCreateRequest {
+            name: NETWORK.to_string(),
+            driver: Some("bridge".to_string()),
+            ..Default::default()
+        });
+        bounded(CHANGE_TIMEOUT, create)
             .await
             .context("could not create the hedgehog Docker network")?;
         Ok(())
     }
 
     pub async fn image_exists(&self, image: &str) -> bool {
-        self.api.inspect_image(image).await.is_ok()
+        bounded(QUERY_TIMEOUT, self.api.inspect_image(image))
+            .await
+            .is_ok()
     }
 
     pub async fn pull(&self, image: &str) -> Result<()> {
@@ -253,19 +351,20 @@ impl Docker {
             ..Default::default()
         };
         let options = CreateContainerOptionsBuilder::default().name(&name).build();
-        self.api
-            .create_container(Some(options), body)
-            .await
-            .with_context(|| format!("could not create container {name}"))?;
-        self.api
-            .start_container(&name, None)
+        bounded(
+            CHANGE_TIMEOUT,
+            self.api.create_container(Some(options), body),
+        )
+        .await
+        .with_context(|| format!("could not create container {name}"))?;
+        bounded(CHANGE_TIMEOUT, self.api.start_container(&name, None))
             .await
             .with_context(|| format!("could not start container {name}"))?;
         Ok(name)
     }
 
     pub async fn state(&self, container: &str) -> Result<ContainerState> {
-        match self.api.inspect_container(container, None).await {
+        match bounded(QUERY_TIMEOUT, self.api.inspect_container(container, None)).await {
             Ok(info) => {
                 let state = info.state.unwrap_or_default();
                 let up = state.running.unwrap_or(false) && !state.restarting.unwrap_or(false);
@@ -289,7 +388,7 @@ impl Docker {
     /// The `127.0.0.1` port Docker published the app on. It can change when
     /// the container restarts, so callers re-check it.
     pub async fn host_port(&self, container: &str) -> Result<Option<u16>> {
-        let info = self.api.inspect_container(container, None).await?;
+        let info = bounded(QUERY_TIMEOUT, self.api.inspect_container(container, None)).await?;
         let port = info
             .network_settings
             .and_then(|settings| settings.ports)
@@ -304,7 +403,7 @@ impl Docker {
     /// The host port a container's first port binding asked for, whether or
     /// not it is running.
     pub async fn published_port(&self, container: &str) -> Result<Option<u16>> {
-        let info = self.api.inspect_container(container, None).await?;
+        let info = bounded(QUERY_TIMEOUT, self.api.inspect_container(container, None)).await?;
         let port = info
             .host_config
             .and_then(|config| config.port_bindings)
@@ -317,15 +416,19 @@ impl Docker {
     }
 
     pub async fn start(&self, container: &str) -> Result<()> {
-        self.api
-            .start_container(container, None)
+        bounded(CHANGE_TIMEOUT, self.api.start_container(container, None))
             .await
             .with_context(|| format!("could not start {container}"))
     }
 
     pub async fn stop(&self, container: &str) -> Result<()> {
         let options = StopContainerOptionsBuilder::default().t(10).build();
-        match self.api.stop_container(container, Some(options)).await {
+        match bounded(
+            CHANGE_TIMEOUT,
+            self.api.stop_container(container, Some(options)),
+        )
+        .await
+        {
             Ok(())
             | Err(bollard::errors::Error::DockerResponseServerError {
                 status_code: 304 | 404,
@@ -337,7 +440,12 @@ impl Docker {
 
     pub async fn remove(&self, container: &str) -> Result<()> {
         let options = RemoveContainerOptionsBuilder::default().force(true).build();
-        match self.api.remove_container(container, Some(options)).await {
+        match bounded(
+            CHANGE_TIMEOUT,
+            self.api.remove_container(container, Some(options)),
+        )
+        .await
+        {
             Ok(())
             | Err(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404, ..
@@ -354,7 +462,7 @@ impl Docker {
             .all(true)
             .filters(&filters)
             .build();
-        let containers = self.api.list_containers(Some(options)).await?;
+        let containers = bounded(QUERY_TIMEOUT, self.api.list_containers(Some(options))).await?;
         Ok(containers
             .into_iter()
             .filter_map(|container| container.names?.into_iter().next())
@@ -369,11 +477,12 @@ impl Docker {
         let options = ListImagesOptionsBuilder::default()
             .filters(&filters)
             .build();
-        for image in self.api.list_images(Some(options)).await? {
+        for image in bounded(QUERY_TIMEOUT, self.api.list_images(Some(options))).await? {
             for tag in image.repo_tags {
                 if !keep.contains(&tag.as_str()) {
                     let options = RemoveImageOptionsBuilder::default().build();
-                    let _ = self.api.remove_image(&tag, Some(options), None).await;
+                    let remove = self.api.remove_image(&tag, Some(options), None);
+                    let _ = bounded(CHANGE_TIMEOUT, remove).await;
                 }
             }
         }
@@ -455,6 +564,71 @@ mod tests {
             std::fs::read_link(ours.join("cli-plugins")).unwrap(),
             user.join("cli-plugins")
         );
+    }
+
+    #[test]
+    fn docker_is_down_only_after_a_minute_of_failed_pings() {
+        let health = Health::default();
+        let start = Instant::now();
+        let at = |secs| start + Duration::from_secs(secs);
+        assert_eq!(health.record(true, at(0), 1000), None);
+        for secs in [5, 30, 59] {
+            assert_eq!(health.record(false, at(secs), 1000 + secs as i64), None);
+            assert_eq!(health.down_since(), None, "{secs}s of failures");
+        }
+        // Reported once, from the first failed ping.
+        assert_eq!(
+            health.record(false, at(65), 1065),
+            Some(HealthChange::WentDown { since: 1005 })
+        );
+        assert_eq!(health.down_since(), Some(1005));
+        for secs in [70, 600, 3600] {
+            assert_eq!(health.record(false, at(secs), 1000 + secs as i64), None);
+        }
+        assert_eq!(health.down_since(), Some(1005));
+    }
+
+    #[test]
+    fn docker_coming_back_is_reported_once() {
+        let health = Health::default();
+        let start = Instant::now();
+        let at = |secs| start + Duration::from_secs(secs);
+        health.record(false, at(0), 1000);
+        health.record(false, at(60), 1060);
+        assert_eq!(health.down_since(), Some(1000));
+        assert_eq!(
+            health.record(true, at(100), 1100),
+            Some(HealthChange::CameBack {
+                down_for: Duration::from_secs(100)
+            })
+        );
+        assert_eq!(health.down_since(), None);
+        assert_eq!(health.record(true, at(105), 1105), None);
+    }
+
+    #[test]
+    fn a_ping_that_answers_resets_the_clock() {
+        let health = Health::default();
+        let start = Instant::now();
+        let at = |secs| start + Duration::from_secs(secs);
+        health.record(false, at(0), 1000);
+        assert_eq!(health.record(true, at(50), 1050), None, "never went down");
+        health.record(false, at(55), 1055);
+        assert_eq!(health.record(false, at(100), 1100), None);
+        assert_eq!(health.down_since(), None);
+        assert_eq!(
+            health.record(false, at(115), 1115),
+            Some(HealthChange::WentDown { since: 1055 })
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_calls_give_up() {
+        let hung = std::future::pending::<Result<(), bollard::errors::Error>>();
+        let error = bounded(Duration::from_millis(10), hung).await.unwrap_err();
+        assert!(error.to_string().starts_with("Docker didn't answer within"));
+        let quick = async { Ok::<_, bollard::errors::Error>(7) };
+        assert_eq!(bounded(Duration::from_secs(1), quick).await.unwrap(), 7);
     }
 
     #[test]

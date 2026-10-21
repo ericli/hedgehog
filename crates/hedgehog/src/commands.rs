@@ -338,8 +338,19 @@ async fn wait_for_deploy(client: &Client, app: &str) -> Result<()> {
     }
 }
 
+fn status_text(app: &AppInfo) -> &'static str {
+    if app.status_unknown {
+        "unknown"
+    } else {
+        app.status.as_str()
+    }
+}
+
 fn status_label(app: &AppInfo) -> String {
-    let text = app.status.as_str();
+    let text = status_text(app);
+    if app.status_unknown {
+        return red(text);
+    }
     match app.status {
         AppStatus::Running => green(text),
         AppStatus::Failed => red(text),
@@ -371,7 +382,7 @@ async fn list(client: &Client) -> Result<()> {
     );
     for app in &apps {
         let status = status_label(app);
-        let padding = " ".repeat(9usize.saturating_sub(app.status.as_str().len()));
+        let padding = " ".repeat(9usize.saturating_sub(status_text(app).len()));
         let access = if app.public { "public" } else { "private" };
         println!(
             "{:width$}  {status}{padding} {access:8} {}",
@@ -386,6 +397,12 @@ async fn list(client: &Client) -> Result<()> {
                 dim(&format!("↳ last deploy failed: {first}"))
             );
         }
+    }
+    if apps.iter().any(|app| app.status_unknown) {
+        println!(
+            "\n{}",
+            red("Docker isn't answering, so these apps are probably down. See `hedgehog status`.")
+        );
     }
     Ok(())
 }
@@ -654,7 +671,7 @@ fn mood(status: &Status, apps: &[AppInfo]) -> Mood {
     let failing = apps
         .iter()
         .any(|app| app.status == AppStatus::Failed || app.last_error.is_some());
-    if tunnel_trouble || failing || status.backup_error.is_some() {
+    if !status.docker || tunnel_trouble || failing || status.backup_error.is_some() {
         Mood::Worried
     } else if apps.is_empty() {
         Mood::Sleepy
@@ -673,7 +690,18 @@ fn print_status(client: &Client, status: &Status, apps: Option<&[AppInfo]>) {
         status.version,
         client.label
     ));
-    lines.push(format!("  docker    {}", tick(status.docker)));
+    let docker = match (status.docker, status.docker_down_since) {
+        (true, _) => green("ok"),
+        (false, Some(since)) => red(&format!("not answering (since {})", clock(since))),
+        (false, None) => red("not answering"),
+    };
+    lines.push(format!("  docker    {docker}"));
+    if !status.docker {
+        lines.push(format!(
+            "            {}",
+            dim("apps are probably down; quitting and reopening Docker Desktop usually fixes it")
+        ));
+    }
     lines.push(format!(
         "  railpack  {}",
         if status.railpack {
@@ -732,18 +760,48 @@ fn print_status(client: &Client, status: &Status, apps: Option<&[AppInfo]>) {
     }
 }
 
+fn unix_now() -> Option<i64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs() as i64)
+}
+
 /// "5m ago" and friends, for Unix seconds.
 fn ago(seconds: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(seconds);
+    let now = unix_now().unwrap_or(seconds);
     match (now - seconds).max(0) {
         0..60 => "just now".to_string(),
         diff @ 60..3600 => format!("{}m ago", diff / 60),
         diff @ 3600..86400 => format!("{}h ago", diff / 3600),
         diff => format!("{}d ago", diff / 86400),
     }
+}
+
+fn local_time(seconds: i64) -> Option<libc::tm> {
+    let time = seconds as libc::time_t;
+    // SAFETY: an all-zero `tm` is valid, and both pointers outlive the call.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let filled = unsafe { libc::localtime_r(&time, &mut tm) };
+    (!filled.is_null()).then_some(tm)
+}
+
+/// "13:55" for Unix seconds today, "Oct 19 13:55" for an earlier day, in
+/// this computer's time zone.
+fn clock(seconds: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let Some(then) = local_time(seconds) else {
+        return ago(seconds);
+    };
+    let time = format!("{:02}:{:02}", then.tm_hour, then.tm_min);
+    let today = unix_now().and_then(local_time);
+    if today.is_some_and(|today| (today.tm_year, today.tm_yday) == (then.tm_year, then.tm_yday)) {
+        return time;
+    }
+    let month = MONTHS[then.tm_mon.clamp(0, 11) as usize];
+    format!("{month} {} {time}", then.tm_mday)
 }
 
 async fn backup(client: &Client, to: Option<String>) -> Result<()> {
@@ -1226,6 +1284,61 @@ mod tests {
             normalize_remote_url("http://100.1.2.3:7700"),
             "http://100.1.2.3:7700"
         );
+    }
+
+    fn status(docker: bool) -> Status {
+        Status {
+            version: "0.1.0".into(),
+            tunnel: hedgehog_core::api::TunnelInfo {
+                state: "connected".into(),
+                hostname: None,
+                error: None,
+            },
+            home_url: None,
+            apps: 1,
+            docker,
+            docker_down_since: (!docker).then_some(1000),
+            railpack: true,
+            apps_dir: "/apps".into(),
+            last_backup: None,
+            backup_destination: None,
+            backup_error: None,
+        }
+    }
+
+    #[test]
+    fn docker_not_answering_worries_the_hedgehog() {
+        let app = AppInfo {
+            name: "notes".into(),
+            status: AppStatus::Running,
+            status_unknown: false,
+            url: None,
+            public: false,
+            source_dir: "/apps/notes".into(),
+            git: false,
+            builder: None,
+            revision: None,
+            deployed_at: None,
+            last_error: None,
+        };
+        assert_eq!(mood(&status(true), std::slice::from_ref(&app)), Mood::Happy);
+        let unknown = AppInfo {
+            status_unknown: true,
+            ..app
+        };
+        assert_eq!(mood(&status(false), &[unknown]), Mood::Worried);
+        assert_eq!(mood(&status(false), &[]), Mood::Worried);
+    }
+
+    #[test]
+    fn clock_shows_the_date_only_for_earlier_days() {
+        let now = unix_now().unwrap();
+        let today = clock(now);
+        assert_eq!(today.len(), 5, "{today}");
+        assert_eq!(&today[2..3], ":");
+        let earlier = clock(now - 3 * 24 * 60 * 60);
+        assert!(earlier.len() > 5, "{earlier}");
+        assert!(earlier.ends_with(&today[2..]), "same minute: {earlier}");
     }
 
     #[test]
