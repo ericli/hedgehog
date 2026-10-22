@@ -77,6 +77,10 @@ pub fn service_env(
     env
 }
 
+/// A launchd domain can get stuck in "on-demand-only" mode, where it holds
+/// back RunAtLoad and KeepAlive spawns, so a crashed daemon would stay down.
+/// Calendar events still count as demand, so the empty StartCalendarInterval
+/// (every minute) restarts it within a minute; a running daemon is left alone.
 pub fn render_plist(exe: &Path, log: &Path, vars: &[(String, String)]) -> String {
     let env: String = vars
         .iter()
@@ -110,6 +114,8 @@ pub fn render_plist(exe: &Path, log: &Path, vars: &[(String, String)]) -> String
   <true/>
   <key>ThrottleInterval</key>
   <integer>10</integer>
+  <key>StartCalendarInterval</key>
+  <dict/>
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>
@@ -211,6 +217,10 @@ mod tests {
         assert!(plist.contains("<string>/Users/me/.cargo/bin/hedgehog</string>"));
         assert!(plist.contains("<string>daemon</string>"));
         assert!(plist.contains("<key>PATH</key>"));
+        assert!(
+            plist.contains("<key>StartCalendarInterval</key>\n  <dict/>"),
+            "restarts a crashed daemon when the domain holds KeepAlive spawns"
+        );
         assert!(plist.contains("<key>HEDGEHOG_MAX_BUILDS</key>\n    <string>1</string>"));
         assert!(plist.contains("<key>HEDGEHOG_DOCKER_CREDENTIALS</key>"));
         assert!(!plist.contains("HEDGEHOG_REMOTE"), "a CLI-only setting");
