@@ -507,6 +507,20 @@ impl Docker {
         })
     }
 
+    /// The container's last `lines` lines of output, for error messages.
+    pub async fn recent_logs(&self, container: &str, lines: usize) -> String {
+        let logs = self.logs(container, false, lines).collect::<Vec<_>>();
+        let chunks = tokio::time::timeout(Duration::from_secs(10), logs)
+            .await
+            .unwrap_or_default();
+        let text: String = chunks
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|chunk| String::from_utf8_lossy(&chunk).into_owned())
+            .collect();
+        text.trim_end().to_string()
+    }
+
     /// Runs a command in a container with `stdin` piped in; returns stdout.
     pub async fn exec(&self, container: &str, command: &[&str], stdin: &[u8]) -> Result<Vec<u8>> {
         let mut child = self

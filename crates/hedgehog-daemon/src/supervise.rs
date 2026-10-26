@@ -222,6 +222,9 @@ pub async fn reconcile(daemon: &Arc<Daemon>, boot: bool) {
             return;
         }
     };
+    if apps.iter().any(uses_postgres) {
+        keep_postgres_up(daemon).await;
+    }
     let names: HashSet<&str> = apps.iter().map(|app| app.name.as_str()).collect();
     for app in &apps {
         let lock = daemon.lock(&app.name);
@@ -238,6 +241,43 @@ pub async fn reconcile(daemon: &Arc<Daemon>, boot: bool) {
         }
     }
     daemon.sync_routes();
+}
+
+/// Whether a deployed app that should be running uses the shared Postgres.
+fn uses_postgres(app: &AppRecord) -> bool {
+    !app.stopped
+        && app.container.is_some()
+        && Manifest::load(&app.source_dir)
+            .unwrap_or_default()
+            .postgres()
+}
+
+/// Brings the shared Postgres back when it isn't running. Docker restarts it
+/// after a crash, but not out of a failure that repeats on every start, like
+/// a lock file a crash left behind: on 2026-10-25 that kept it, and the apps
+/// using it, down for over a day. A fresh container clears that (its data
+/// volume stays). It's started in the background since it can take a minute.
+async fn keep_postgres_up(daemon: &Arc<Daemon>) {
+    if daemon.postgres.is_starting() {
+        return;
+    }
+    match daemon.postgres.is_running().await {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            warn!("could not check on Postgres: {error:#}");
+            return;
+        }
+    }
+    warn!("Postgres isn't running; starting a fresh container (its data volume stays)");
+    let daemon = daemon.clone();
+    tokio::spawn(async move {
+        let log = |message: String| info!("{message}");
+        match daemon.postgres.ensure_running(&daemon.store, &log).await {
+            Ok(()) => info!("Postgres is running again"),
+            Err(error) => warn!("could not bring Postgres back: {error:#}"),
+        }
+    });
 }
 
 async fn reconcile_app(daemon: &Arc<Daemon>, app: &AppRecord, boot: bool) -> Result<()> {

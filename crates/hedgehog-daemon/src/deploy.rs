@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use futures_util::StreamExt;
 use hedgehog_core::Manifest;
 use hedgehog_core::api::{AppStatus, DeployEvent};
 use hedgehog_core::env::{EnvMap, merge, read_app_dotenv};
@@ -376,7 +375,7 @@ impl Daemon {
                 ContainerState::Running { restarts: 0 } => {}
                 ContainerState::Running { .. } => bail!(
                     "the app crashed before it started serving (Docker restarted it). Last output:\n{}",
-                    self.recent_logs(container, 30).await
+                    self.docker.recent_logs(container, 30).await
                 ),
                 ContainerState::Stopped { exit_code } => {
                     let code = exit_code
@@ -384,7 +383,7 @@ impl Daemon {
                         .unwrap_or_else(|| "?".into());
                     bail!(
                         "the app exited (code {code}) before it started serving. Last output:\n{}",
-                        self.recent_logs(container, 30).await
+                        self.docker.recent_logs(container, 30).await
                     );
                 }
                 ContainerState::Missing => bail!("the app's container disappeared while starting"),
@@ -405,27 +404,11 @@ impl Daemon {
                 bail!(
                     "the app never answered HTTP on port {app_port}. Make sure it listens on $PORT \
                      (or set `port` in hedgehog.toml). Last output:\n{}",
-                    self.recent_logs(container, 30).await
+                    self.docker.recent_logs(container, 30).await
                 );
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-    }
-
-    async fn recent_logs(&self, container: &str, lines: usize) -> String {
-        let logs = self
-            .docker
-            .logs(container, false, lines)
-            .collect::<Vec<_>>();
-        let chunks = tokio::time::timeout(Duration::from_secs(10), logs)
-            .await
-            .unwrap_or_default();
-        let text: String = chunks
-            .into_iter()
-            .filter_map(Result::ok)
-            .map(|chunk| String::from_utf8_lossy(&chunk).into_owned())
-            .collect();
-        text.trim_end().to_string()
     }
 
     pub async fn stop_app(&self, app: &str) -> Result<()> {

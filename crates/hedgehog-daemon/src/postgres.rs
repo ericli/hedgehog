@@ -5,6 +5,7 @@
 //! deployed apps (reachable only on the hedgehog Docker network), and a dev
 //! one (`hedgehog db up`) published on `localhost` for working on apps.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -22,12 +23,39 @@ pub const DEV_CONTAINER: &str = "hedgehog-dev-postgres";
 pub const DEFAULT_DEV_PORT: u16 = 5432;
 pub const IMAGE: &str = "postgres:17-alpine";
 
+/// Where Postgres keeps its Unix socket and the socket's lock file. It's a
+/// tmpfs, so a lock file a crash leaves behind goes away when the container
+/// stops, instead of staying in it and failing every later start.
+const SOCKET_DIR: &str = "/var/run/postgresql";
+
+/// Runs the image's usual entrypoint, first removing a `postmaster.pid` that
+/// holds no PID. When Docker's VM loses writes (the Mac's disk filled up),
+/// the file can come back full of zeros, and Postgres refuses to start
+/// ("bogus data in lock file") until someone deletes it. Only this container
+/// uses the data volume, so a file like that is always a leftover. One with a
+/// PID is left alone: Postgres checks those itself.
+const ENTRYPOINT: &str = r#"pid="$PGDATA/postmaster.pid"
+if [ -e "$pid" ] && ! head -n 1 "$pid" | grep -qE '^[1-9][0-9]*$'; then
+  echo "hedgehog: removing $pid, which an unclean stop left without a PID" >&2
+  rm -f "$pid"
+fi
+exec docker-entrypoint.sh postgres"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flavor {
     /// For deployed apps, on the `hedgehog` network.
     Shared,
     /// For development, published on `127.0.0.1:<port>`.
     Dev { port: u16 },
+}
+
+impl Flavor {
+    fn container(self) -> &'static str {
+        match self {
+            Flavor::Shared => CONTAINER,
+            Flavor::Dev { .. } => DEV_CONTAINER,
+        }
+    }
 }
 
 pub struct Postgres {
@@ -76,10 +104,7 @@ impl Postgres {
     }
 
     pub fn container(&self) -> &'static str {
-        match self.flavor {
-            Flavor::Shared => CONTAINER,
-            Flavor::Dev { .. } => DEV_CONTAINER,
-        }
+        self.flavor.container()
     }
 
     pub async fn is_running(&self) -> Result<bool> {
@@ -89,8 +114,14 @@ impl Postgres {
         ))
     }
 
-    /// Starts the Postgres container, creating it the first time. A dev
-    /// container on a different port is recreated (its data volume stays).
+    /// Whether a start, which can take a minute, is under way.
+    pub fn is_starting(&self) -> bool {
+        self.starting.try_lock().is_err()
+    }
+
+    /// Starts the Postgres container, creating it the first time. A stopped
+    /// container, or a dev one on a different port, is recreated (its data
+    /// volume stays).
     pub async fn ensure_running(
         &self,
         store: &Store,
@@ -108,54 +139,64 @@ impl Postgres {
         }
         match state {
             ContainerState::Running { .. } => {}
-            ContainerState::Stopped { .. } => self.start(container).await?,
-            ContainerState::Missing => {
-                if !self.docker.image_exists(IMAGE).await {
-                    log(format!("pulling {IMAGE} (first time only)"));
-                    self.docker.pull(IMAGE).await?;
-                }
-                let password =
-                    store.setting_or_init("postgres.superuser_password", random_password)?;
-                let options = CreateContainerOptionsBuilder::default()
-                    .name(container)
-                    .build();
-                let create = self
-                    .docker
-                    .api()
-                    .create_container(Some(options), self.container_body(&password));
-                match crate::docker::bounded(Duration::from_secs(30), create).await {
-                    // Something else (another hedgehog, or a CLI) just made it.
-                    Ok(_)
-                    | Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 409,
-                        ..
-                    }) => {}
-                    Err(error) => {
-                        return Err(error).context("could not create the Postgres container");
-                    }
-                }
-                if !self.is_running().await? {
-                    self.start(container).await?;
-                }
+            // Recreated rather than restarted: everything worth keeping is in
+            // the data volume, and a fresh container can't trip over files a
+            // crash left in the old one. This also covers one Docker keeps
+            // restarting, and moves containers onto the current settings.
+            ContainerState::Stopped { .. } => {
+                self.docker.remove(container).await?;
+                self.create(store, log).await?;
             }
+            ContainerState::Missing => self.create(store, log).await?,
         }
         self.wait_ready().await
     }
 
-    fn container_body(&self, password: &str) -> ContainerCreateBody {
+    async fn create(&self, store: &Store, log: &(dyn Fn(String) + Send + Sync)) -> Result<()> {
+        let container = self.container();
+        if !self.docker.image_exists(IMAGE).await {
+            log(format!("pulling {IMAGE} (first time only)"));
+            self.docker.pull(IMAGE).await?;
+        }
+        let password = store.setting_or_init("postgres.superuser_password", random_password)?;
+        let options = CreateContainerOptionsBuilder::default()
+            .name(container)
+            .build();
+        let create = self
+            .docker
+            .api()
+            .create_container(Some(options), Self::container_body(self.flavor, &password));
+        match crate::docker::bounded(Duration::from_secs(30), create).await {
+            // Something else (another hedgehog, or a CLI) just made it.
+            Ok(_)
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 409, ..
+            }) => {}
+            Err(error) => {
+                return Err(error).context("could not create the Postgres container");
+            }
+        }
+        if !self.is_running().await? {
+            self.start(container).await?;
+        }
+        Ok(())
+    }
+
+    fn container_body(flavor: Flavor, password: &str) -> ContainerCreateBody {
         let restart_policy = Some(RestartPolicy {
             name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
             maximum_retry_count: None,
         });
-        let volume = self.container();
+        let volume = flavor.container();
         let mut host_config = HostConfig {
             binds: Some(vec![format!("{volume}:/var/lib/postgresql/data")]),
+            tmpfs: Some(HashMap::from([(SOCKET_DIR.to_string(), String::new())])),
             restart_policy,
             log_config: Some(crate::docker::log_config()),
             ..Default::default()
         };
         let mut exposed_ports = None;
-        match self.flavor {
+        match flavor {
             Flavor::Shared => host_config.network_mode = Some(NETWORK.to_string()),
             Flavor::Dev { port } => {
                 exposed_ports = Some(vec!["5432/tcp".to_string()]);
@@ -173,6 +214,7 @@ impl Postgres {
         }
         ContainerCreateBody {
             image: Some(IMAGE.to_string()),
+            entrypoint: Some(vec!["sh".into(), "-c".into(), ENTRYPOINT.into()]),
             env: Some(vec![format!("POSTGRES_PASSWORD={password}")]),
             exposed_ports,
             host_config: Some(host_config),
@@ -218,7 +260,10 @@ impl Postgres {
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        bail!("Postgres did not become ready within 60 seconds")
+        bail!(
+            "Postgres did not become ready within 60 seconds. Last output:\n{}",
+            self.docker.recent_logs(self.container(), 10).await
+        )
     }
 
     async fn psql(&self, script: &str) -> Result<()> {
@@ -331,5 +376,66 @@ mod tests {
             dev_database_url("my-app", "pw", 5433),
             "postgres://my-app:pw@localhost:5433/my-app"
         );
+    }
+
+    #[test]
+    fn keeps_lock_files_from_outliving_a_crash() {
+        let body = Postgres::container_body(Flavor::Shared, "pw");
+        let host_config = body.host_config.unwrap();
+        assert_eq!(
+            host_config.binds.unwrap(),
+            vec!["hedgehog-postgres:/var/lib/postgresql/data"]
+        );
+        assert!(host_config.tmpfs.unwrap().contains_key(SOCKET_DIR));
+        assert_eq!(body.entrypoint.unwrap()[2], ENTRYPOINT);
+    }
+
+    /// Runs [`ENTRYPOINT`] with `postmaster.pid` holding `pid_file` (or
+    /// missing), and a stand-in for the image's entrypoint. Returns whether
+    /// the file is still there.
+    fn run_entrypoint(pid_file: Option<&[u8]>) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        if let Some(contents) = pid_file {
+            std::fs::write(data.join("postmaster.pid"), contents).unwrap();
+        }
+        let stand_in = dir.path().join("docker-entrypoint.sh");
+        std::fs::write(&stand_in, "#!/bin/sh\necho \"started $*\"\n").unwrap();
+        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            dir.path().display(),
+            std::env::var("PATH").unwrap()
+        );
+        let output = std::process::Command::new("sh")
+            .args(["-c", ENTRYPOINT])
+            .env("PGDATA", &data)
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "started postgres\n"
+        );
+        data.join("postmaster.pid").exists()
+    }
+
+    #[test]
+    fn removes_pid_files_without_a_pid() {
+        // What Docker's VM left after losing its disk on 2026-10-25.
+        assert!(!run_entrypoint(Some(&[0; 94])));
+        assert!(!run_entrypoint(Some(b"")));
+        assert!(!run_entrypoint(Some(b"\n\n")));
+        assert!(!run_entrypoint(Some(b"0\n")));
+        // Postgres decides about these itself.
+        assert!(run_entrypoint(Some(
+            b"1\n/var/lib/postgresql/data\n1792538739\n5432\n"
+        )));
+        assert!(run_entrypoint(Some(b"4321\n")));
+        assert!(!run_entrypoint(None));
     }
 }
